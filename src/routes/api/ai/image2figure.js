@@ -221,10 +221,13 @@ async function processFigure3D(imageInput, customPrompt = null) {
     throw new Error('All sources failed: ' + JSON.stringify(errors));
   }
 
+  // رفع الصورة النهائية إلى Catbox والحصول على الرابط
+  console.log('📤 Uploading result to Catbox...');
+  const imageUrl = await uploadToCatbox(resultBuffer);
+
   return {
-    buffer: resultBuffer,
-    source: successSource,
-    base64: resultBuffer.toString('base64')
+    url: imageUrl,
+    source: successSource
   };
 }
 
@@ -247,7 +250,7 @@ router.post("/", async (req, res) => {
       status: true, 
       message: "✅ تم إنشاء المجسم بنجاح",
       source: result.source,
-      image: `data:image/png;base64,${result.base64}`
+      image: result.url
     });
 
   } catch (err) {
@@ -279,7 +282,7 @@ router.get("/", async (req, res) => {
       status: true, 
       message: "✅ تم إنشاء المجسم بنجاح",
       source: result.source,
-      image: `data:image/png;base64,${result.base64}`
+      image: result.url
     });
 
   } catch (err) {
