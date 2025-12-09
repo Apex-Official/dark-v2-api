@@ -1,70 +1,50 @@
-import express from "express";
+// api/anime.js
 import axios from "axios";
-import * as cheerio from "cheerio";
 
-const router = express.Router();
+export default async function handler(req, res) {
+  const animeName = req.query.q?.trim();
 
-const headers = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-};
+  if (!animeName) {
+    return res.status(400).json({
+      status: "error",
+      message: "الرجاء إدخال اسم الأنمي باستخدام ?q=<اسم الأنمي>",
+    });
+  }
 
-/** 🔍 SEARCH ONLY */
-router.get("/", async (req, res) => {
   try {
-    const q = req.query.q;
-    if (!q)
-      return res
-        .status(400)
-        .json({ status: false, message: "⚠️ كلمة البحث مطلوبة" });
+    const searchParams = {
+      _offset: 0,
+      _limit: 30,
+      _order_by: "latest_first",
+      list_type: "filter",
+      anime_name: animeName,
+      just_info: "Yes",
+    };
 
-    const url = `https://ww.anime4up.rest/?search_param=animes&s=${encodeURIComponent(
-      q
-    )}`;
+    const jsonParam = encodeURIComponent(JSON.stringify(searchParams));
 
-    const { data } = await axios.get(url, { headers });
+    const apiUrl = `https://anslayer.com/anime/public/animes/get-published-animes?json=${jsonParam}`;
 
-    const $ = cheerio.load(data);
-    const su = cheerio.load($(".anime-grid").html() || "");
-
-    const results = [];
-
-    su(".anime-card-themex").each((_, el) => {
-      results.push({
-        title: su(el)
-          .find(".anime-card-title h3 a")
-          .text()
-          .trim(),
-        link: su(el)
-          .find(".anime-card-title h3 a")
-          .attr("href"),
-        image: su(el)
-          .find("img")
-          .attr("data-image"),
-        status: su(el)
-          .find(".anime-card-status")
-          .text()
-          .trim(),
-        type: su(el)
-          .find(".anime-card-type")
-          .text()
-          .trim(),
-      });
+    const response = await axios.get(apiUrl, {
+      headers: {
+        "User-Agent": "okhttp/3.12.13",
+        "Accept": "application/json",
+        "client-id": "android-app2",
+        "client-secret": "7befba6263cc14c90d2f1d6da2c5cf9b251bfbbd",
+      },
+      timeout: 30000,
     });
 
-    res.json({
-      status: true,
-      query: q,
-      total: results.length,
-      results,
-    });
+    // إعادة JSON كما هو
+    res.status(200).json(response.data);
+
   } catch (err) {
+    console.error("ANIME_API_ERROR:", err);
+
     res.status(500).json({
-      status: false,
-      message: "❌ فشل تنفيذ البحث",
+      status: "error",
+      message: "حدث خطأ أثناء جلب البيانات من API الأصلي",
       error: err.message,
     });
   }
-});
-
-export default router;
+}
