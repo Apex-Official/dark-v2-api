@@ -3,15 +3,68 @@ import axios from "axios";
 
 const router = express.Router();
 
+class GeminiAPI {
+  constructor() {
+    this.baseUrl =
+      "https://us-central1-infinite-chain-295909.cloudfunctions.net/gemini-proxy-staging-v1";
+    this.headers = {
+      accept: "*/*",
+      "accept-language": "id-ID,id;q=0.9",
+      "content-type": "application/json",
+      priority: "u=1, i",
+      "sec-ch-ua":
+        '"Chromium";v="131", "Not_A Brand";v="24", "Microsoft Edge Simulate";v="131", "Lemur";v="131"',
+      "sec-ch-ua-mobile": "?1",
+      "sec-ch-ua-platform": '"Android"',
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "cross-site",
+      "user-agent":
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    };
+  }
+
+  async getData(imageUrl) {
+    const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
+    return {
+      inline_data: {
+        mime_type: response.headers["content-type"],
+        data: Buffer.from(response.data, "binary").toString("base64"),
+      },
+    };
+  }
+
+  async chat({ model = "gemini-2.0-flash-lite", prompt, imageUrl = null, ...rest }) {
+    if (!prompt) throw new Error("Prompt is required");
+
+    const parts = [];
+
+    if (imageUrl) {
+      const urls = Array.isArray(imageUrl) ? imageUrl : [imageUrl];
+      for (const url of urls) {
+        const imagePart = await this.getData(url);
+        parts.push(imagePart);
+      }
+    }
+
+    parts.push({ text: prompt });
+
+    const body = { contents: [{ parts }], ...rest };
+
+    const response = await axios.post(this.baseUrl, body, { headers: this.headers });
+    return response.data;
+  }
+}
+
 class AICodeGenerator {
   constructor() {
-    this.aiBaseUrl = "https://dark-api-x.vercel.app/api/v1/ai/gemini";
+    this.gemini = new GeminiAPI();
   }
 
   async analyzeAPI(apiUrl) {
     try {
       const testUrl = apiUrl.replace("$", encodeURIComponent("test"));
-      const res = await axios.get(testUrl);
+      const res = await axios.get(testUrl, { timeout: 10000 });
       return res.data;
     } catch (error) {
       throw new Error("فشل تحليل الـ API: " + error.message);
@@ -77,7 +130,6 @@ const handler = async (m, { conn, text }) => {
     
     if (!j.download_url) return m.reply("❌ لم يتم العثور على الفيديو");
     
-    // إرسال معلومات
     let info = \`✅ تم العثور على:\\n\`;
     info += \`📌 العنوان: \${j.title}\\n\`;
     info += \`⏱️ المدة: \${j.duration}\\n\`;
@@ -85,7 +137,6 @@ const handler = async (m, { conn, text }) => {
     info += \`⏳ جاري التحميل...\`;
     await m.reply(info);
     
-    // إرسال الفيديو
     await conn.sendMessage(m.chat, {
       video: { url: j.download_url },
       caption: \`🎬 \${j.title}\`,
@@ -138,25 +189,8 @@ export default handler;
 الآن قم بتحليل استجابة الـ API أعلاه وأنشئ الكود المناسب. أرجع الكود فقط بدون شرح.`;
 
     try {
-      const aiUrl = `${this.aiBaseUrl}?prompt=${encodeURIComponent(prompt)}`;
-      const aiRes = await axios.get(aiUrl);
-      const aiJson = aiRes.data;
-
-      let generatedCode = "";
-
-      if (aiJson.status && aiJson.result) {
-        generatedCode = aiJson.result;
-      } else if (aiJson.result) {
-        generatedCode = aiJson.result;
-      } else if (aiJson.response) {
-        generatedCode = aiJson.response;
-      } else if (aiJson.message) {
-        generatedCode = aiJson.message;
-      } else if (aiJson.data) {
-        generatedCode = aiJson.data;
-      } else {
-        throw new Error("استجابة غير متوقعة من الـ AI");
-      }
+      const result = await this.gemini.chat({ prompt });
+      const generatedCode = result?.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (!generatedCode || generatedCode.trim() === "") {
         throw new Error("الذكاء الاصطناعي لم يرجع كود");
@@ -165,10 +199,10 @@ export default handler;
       // استخراج الكود من بين ```
       const codeMatch = generatedCode.match(/```(?:javascript|js)?\n?([\s\S]*?)```/);
       if (codeMatch) {
-        generatedCode = codeMatch[1].trim();
+        return codeMatch[1].trim();
       }
 
-      return generatedCode;
+      return generatedCode.trim();
     } catch (error) {
       throw new Error("فشل توليد الكود: " + error.message);
     }
