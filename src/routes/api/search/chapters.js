@@ -4,165 +4,129 @@ import * as cheerio from "cheerio";
 
 const router = express.Router();
 
-/**
- * تهيئة هيدرز بسيطة وقريبة من طلب المتصفح لتجنب 403
- */
+const DEFAULT_IMAGE = "https://i.postimg.cc/7C2CkQgg/upload-1765096325940.jpg";
+
 const DEFAULT_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-  Referer: "https://mangatuk.com/",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 14; 22120RN86G) AppleWebKit/537.36 Chrome/141.0.7390.122 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "ar,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+  "Referer": "https://azoramoon.com/"
 };
 
-/**
- * دالة مساعدة لتحويل رابط نسبي إلى مطلق بناءً على صفحة المصدر
- */
-function resolveUrl(base, href) {
-  try {
-    return new URL(href, base).href;
-  } catch (e) {
-    return href;
-  }
-}
+class ManhwaChaptersAPI {
+  async getChapters(manhwaUrl) {
+    try {
+      const res = await axios.get(manhwaUrl, { headers: DEFAULT_HEADERS, timeout: 15000 });
+      const $ = cheerio.load(res.data);
+      const chapters = [];
 
-/**
- * جلب روابط الفصول فقط من صفحة المانجا
- * @param {string} url رابط صفحة المانجا على mangatuk.com
- * @returns {Promise<Array<{id:number,title:string,link:string}>>}
- */
-async function fetchChaptersOnly(url) {
-  if (!url) throw new Error("رابط المانجا مطلوب");
+      const manhwaTitle = $('h1.entry-title, .post-title, .title, .wp-manga-title').first().text().trim() || 
+                          $('title').text().trim();
+      const manhwaThumb = $('.summary_image img, .tab-summary img, .manga-image img').first().attr('data-src') || 
+                          $('.summary_image img, .tab-summary img, .manga-image img').first().attr('src') || 
+                          DEFAULT_IMAGE;
 
-  const axiosOptions = {
-    headers: DEFAULT_HEADERS,
-    timeout: 15000,
-    maxRedirects: 5,
-    responseType: "text",
-    validateStatus: (status) => status >= 200 && status < 400,
-  };
+      $('li.wp-manga-chapter a, .wp-manga-chapter a, .listing-chapters li a, a[href*="/chapter/"]').each((i, el) => {
+        const a = $(el);
+        const href = a.attr("href");
+        const title = a.text().trim() || `الفصل ${i + 1}`;
+        if (href && !chapters.find(c => c.url === href)) {
+          chapters.push({ id: href, url: href, title });
+        }
+      });
 
-  const { data } = await axios.get(url, axiosOptions);
-  const $ = cheerio.load(data);
+      if (!chapters.length) {
+        $('a').each((i, el) => {
+          const href = $(el).attr("href") || "";
+          if (/\/chapter\//.test(href)) {
+            const title = $(el).text().trim() || `الفصل ${chapters.length + 1}`;
+            if (!chapters.find(c => c.url === href)) {
+              chapters.push({ id: href, url: href, title });
+            }
+          }
+        });
+      }
 
-  const chapters = [];
-  $(".wp-manga-chapter a").each((i, el) => {
-    const title = $(el).text().trim();
-    let link = $(el).attr("href") || $(el).attr("data-href") || "";
-    link = resolveUrl(url, link);
-
-    if (title && link) {
-      chapters.push({ id: i + 1, title, link });
+      return { 
+        title: manhwaTitle || manhwaUrl, 
+        chapters: chapters.reverse(), 
+        thumb: manhwaThumb 
+      };
+    } catch (e) {
+      console.error("getManhwaChapters error:", e?.message || e);
+      throw new Error("فشل جلب فصول المانهوا");
     }
-  });
-
-  if (chapters.length === 0) {
-    // جرب سيلكتور بديل إن اختلفت البنية في بعض الصفحات
-    $(".chapter-list a, .chapters a").each((i, el) => {
-      const title = $(el).text().trim();
-      let link = $(el).attr("href") || $(el).attr("data-href") || "";
-      link = resolveUrl(url, link);
-      if (title && link) chapters.push({ id: chapters.length + 1, title, link });
-    });
   }
-
-  if (chapters.length === 0) {
-    throw new Error("لم يتم العثور على أي فصول في هذا الرابط");
-  }
-
-  // ترتيب من الأقدم للأحدث (إذا كانت الصفحة تعرض الأحدث أولاً)
-  return chapters.reverse();
 }
 
-/**
- * POST / - جلب الفصول (جسم الطلب: { url: "..." })
- */
+/** 📚 POST Route - جلب فصول المانهوا */
 router.post("/", async (req, res) => {
   try {
-    const { url } = req.body;
-    if (!url || typeof url !== "string" || !url.trim()) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط المانجا مطلوب في body كـ { url }",
-        example: { url: "https://mangatuk.com/manga/solo-leveling/" },
+    const { manhwaUrl } = req.body;
+    if (!manhwaUrl) {
+      return res.status(400).json({ 
+        status: false, 
+        message: "⚠️ الرجاء إدخال رابط المانهوا" 
       });
     }
 
-    const chapters = await fetchChaptersOnly(url.trim());
+    const api = new ManhwaChaptersAPI();
+    const result = await api.getChapters(manhwaUrl);
 
-    res.json({
-      status: true,
-      message: "✅ تم جلب روابط الفصول بنجاح",
-      totalChapters: chapters.length,
-      chapters,
+    if (!result.chapters || !result.chapters.length) {
+      return res.status(404).json({ 
+        status: false, 
+        message: "❌ لم يتم العثور على فصول لهذه المانهوا" 
+      });
+    }
+
+    res.json({ 
+      status: true, 
+      message: `✅ تم العثور على ${result.chapters.length} فصل`, 
+      data: result 
     });
   } catch (err) {
-    console.error("❌ Error POST /manga:", err);
-    // إذا كانت رسالة الخطأ رقمية (مثلاً 403) حاول أن تعطي حالة مناسبة
-    if (err.message && err.message.includes("403")) {
-      return res.status(403).json({
-        status: false,
-        message: "❌ تم حظر الطلب (403). جرّب تغيير الـ Referer أو User-Agent.",
-        error: err.message,
-      });
-    }
-    if (err.message && err.message.includes("لم يتم العثور")) {
-      return res.status(404).json({
-        status: false,
-        message: err.message,
-        chapters: [],
-      });
-    }
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء جلب الفصول",
-      error: err.message || String(err),
+    console.error(err);
+    res.status(500).json({ 
+      status: false, 
+      message: "❌ حدث خطأ أثناء جلب الفصول", 
+      error: err.message 
     });
   }
 });
 
-/**
- * GET /?url=... - جلب الفصول عبر query param
- */
+/** 📚 GET Route - جلب فصول المانهوا */
 router.get("/", async (req, res) => {
   try {
-    const url = req.query.url || req.query.u;
-    if (!url || typeof url !== "string" || !url.trim()) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط المانجا مطلوب في query كـ ?url=",
-        example: "/manga?url=https://mangatuk.com/manga/solo-leveling/",
+    const manhwaUrl = req.query.url;
+    if (!manhwaUrl) {
+      return res.status(400).json({ 
+        status: false, 
+        message: "⚠️ الرجاء إدخال رابط المانهوا" 
       });
     }
 
-    const chapters = await fetchChaptersOnly(url.trim());
+    const api = new ManhwaChaptersAPI();
+    const result = await api.getChapters(manhwaUrl);
 
-    res.json({
-      status: true,
-      message: "✅ تم جلب روابط الفصول بنجاح",
-      totalChapters: chapters.length,
-      chapters,
+    if (!result.chapters || !result.chapters.length) {
+      return res.status(404).json({ 
+        status: false, 
+        message: "❌ لم يتم العثور على فصول لهذه المانهوا" 
+      });
+    }
+
+    res.json({ 
+      status: true, 
+      message: `✅ تم العثور على ${result.chapters.length} فصل`, 
+      data: result 
     });
   } catch (err) {
-    console.error("❌ Error GET /manga:", err);
-    if (err.message && err.message.includes("403")) {
-      return res.status(403).json({
-        status: false,
-        message: "❌ تم حظر الطلب (403). جرّب تغيير الـ Referer أو User-Agent.",
-        error: err.message,
-      });
-    }
-    if (err.message && err.message.includes("لم يتم العثور")) {
-      return res.status(404).json({
-        status: false,
-        message: err.message,
-        chapters: [],
-      });
-    }
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء جلب الفصول",
-      error: err.message || String(err),
+    console.error(err);
+    res.status(500).json({ 
+      status: false, 
+      message: "❌ حدث خطأ أثناء جلب الفصول", 
+      error: err.message 
     });
   }
 });
