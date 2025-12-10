@@ -12,6 +12,13 @@ class MangaScraperAPI {
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+      "Accept-Encoding": "gzip, deflate, br",
+      Connection: "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Cache-Control": "max-age=0",
       Referer: "https://www.google.com/",
     };
   }
@@ -25,9 +32,13 @@ class MangaScraperAPI {
     if (!url) throw new Error("رابط المانجا مطلوب");
 
     try {
-      const { data } = await axios.get(url, { 
+      const { data } = await axios.get(url, {
         headers: this.headers,
-        timeout: 15000 
+        timeout: 15000,
+        maxRedirects: 5,
+        validateStatus: function (status) {
+          return status >= 200 && status < 400;
+        },
       });
 
       const $ = cheerio.load(data);
@@ -37,10 +48,10 @@ class MangaScraperAPI {
         let title = $(el).text().trim();
         let link = $(el).attr("href");
         if (title && link) {
-          chapters.push({ 
+          chapters.push({
             id: i + 1,
-            title, 
-            link 
+            title,
+            link,
           });
         }
       });
@@ -69,16 +80,21 @@ class MangaScraperAPI {
    */
   async getMangaInfo(url) {
     try {
-      const { data } = await axios.get(url, { 
+      const { data } = await axios.get(url, {
         headers: this.headers,
-        timeout: 15000 
+        timeout: 15000,
+        maxRedirects: 5,
+        validateStatus: function (status) {
+          return status >= 200 && status < 400;
+        },
       });
 
       const $ = cheerio.load(data);
-      
+
       const title = $(".post-title h1").text().trim() || "غير معروف";
       const cover = $(".summary_image img").attr("src") || null;
-      const description = $(".summary__content p").text().trim() || "لا يوجد وصف";
+      const description =
+        $(".summary__content p").text().trim() || "لا يوجد وصف";
       const author = $(".author-content a").text().trim() || "غير معروف";
       const status = $(".summary-content").last().text().trim() || "غير معروف";
 
@@ -87,9 +103,10 @@ class MangaScraperAPI {
         cover,
         description,
         author,
-        status
+        status,
       };
     } catch (error) {
+      console.error("خطأ في جلب معلومات المانجا:", error.message);
       return null;
     }
   }
@@ -183,6 +200,7 @@ router.get("/info", async (req, res) => {
       return res.status(400).json({
         status: false,
         message: "⚠️ رابط المانجا مطلوب (url)",
+        example: "/manga/info?url=https://mangatuk.com/manga/solo-leveling/",
       });
     }
 
