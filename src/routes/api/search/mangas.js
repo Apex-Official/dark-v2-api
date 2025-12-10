@@ -64,8 +64,8 @@ class SimpleMangaSearch {
   }
 }
 
-/** GET Route - البحث البسيط */
-router.get("/search", async (req, res) => {
+// ✅ تغيير المسار من /search إلى /mangas
+router.get("/mangas", async (req, res) => {
   try {
     const { query, limit } = req.query;
 
@@ -73,7 +73,7 @@ router.get("/search", async (req, res) => {
       return res.status(400).json({
         status: false,
         message: "⚠️ اسم المانجا مطلوب (query)",
-        example: "/manga/search?query=solo+leveling&limit=5",
+        example: "/api/v1/search/mangas?query=solo+leveling&limit=5",
       });
     }
 
@@ -98,8 +98,7 @@ router.get("/search", async (req, res) => {
   }
 });
 
-/** POST Route - البحث البسيط */
-router.post("/search", async (req, res) => {
+router.post("/mangas", async (req, res) => {
   try {
     const { query, limit = 10 } = req.body;
 
