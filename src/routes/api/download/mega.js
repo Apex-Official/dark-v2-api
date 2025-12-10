@@ -32,8 +32,19 @@ class MegaDownloader {
     return mimeTypes[fileExtension] || "application/octet-stream";
   }
 
+  validateUrl(url) {
+    // التحقق من صحة رابط Mega
+    const megaRegex = /mega\.nz\/(file|folder)\/[a-zA-Z0-9_-]+#[a-zA-Z0-9_-]+/;
+    if (!megaRegex.test(url)) {
+      throw new Error("رابط Mega غير صالح. يجب أن يحتوي على hash (#). مثال: https://mega.nz/file/xxxxx#yyyyy");
+    }
+  }
+
   async download(url) {
     if (!url) throw new Error("رابط Mega مطلوب");
+
+    // التحقق من صحة الرابط
+    this.validateUrl(url);
 
     const file = File.fromURL(url);
     await file.loadAttributes();
@@ -62,16 +73,13 @@ router.post("/", async (req, res) => {
     if (!url) {
       return res.status(400).json({ 
         status: false, 
-        message: "⚠️ رابط Mega مطلوب (url)" 
+        message: "⚠️ رابط Mega مطلوب (url)",
+        example: "https://mega.nz/file/ovJTHaQZ#yAbkrvQgykcH_NDKQ8eIc0zvsN7jonBbHZ_HTQL6lZ8"
       });
     }
 
     const downloader = new MegaDownloader();
     const result = await downloader.download(url);
-
-    res.setHeader('Content-Type', result.mimetype);
-    res.setHeader('Content-Disposition', `attachment; filename="${result.name}"`);
-    res.setHeader('Content-Length', result.size);
 
     res.json({
       status: true,
@@ -100,7 +108,8 @@ router.get("/", async (req, res) => {
     if (!url) {
       return res.status(400).json({ 
         status: false, 
-        message: "⚠️ رابط Mega مطلوب (url)" 
+        message: "⚠️ رابط Mega مطلوب (url)",
+        example: "https://mega.nz/file/ovJTHaQZ#yAbkrvQgykcH_NDKQ8eIc0zvsN7jonBbHZ_HTQL6lZ8"
       });
     }
 
