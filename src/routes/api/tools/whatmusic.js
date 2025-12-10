@@ -1,16 +1,16 @@
 import express from "express";
 import axios from "axios";
 import FormData from "form-data";
+import fs from "fs";
+import { promisify } from "util";
 
 const router = express.Router();
+const unlinkAsync = promisify(fs.unlink);
 
-/*-----------------------------
-       🎵 AHA MUSIC API
-------------------------------*/
 class AhaMusicAPI {
   constructor() {
     this.baseUrl = "https://api.doreso.com/humming";
-    this.defaultHeaders = {
+    this.headers = {
       "user-agent":
         "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
       accept: "application/json, text/plain, */*",
@@ -19,26 +19,18 @@ class AhaMusicAPI {
     };
   }
 
-  async downloadAudio(url) {
-    const res = await axios.get(url, { responseType: "arraybuffer" });
-    return Buffer.from(res.data);
-  }
-
-  async detectFromUrl(audioUrl) {
-    const audioBuffer = await this.downloadAudio(audioUrl);
-
+  async detectSong(audioBuffer) {
     const form = new FormData();
     form.append("file", audioBuffer, {
       filename: "audio.mp3",
-      contentType: "audio/mpeg",
+      contentType: "audio/mp3",
     });
-
     form.append("sample_size", 118784);
 
     const response = await axios.post(this.baseUrl, form, {
       headers: {
         ...form.getHeaders(),
-        ...this.defaultHeaders,
+        ...this.headers,
       },
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
@@ -48,56 +40,127 @@ class AhaMusicAPI {
   }
 }
 
-/*-----------------------------
-       🎵 POST Route
-  (التعرف على الصوت من رابط)
-------------------------------*/
+/** 🧩 POST Route - للرفع المباشر للملف الصوتي */
 router.post("/", async (req, res) => {
-  try {
-    const { audioUrl } = req.body;
+  let tempPath = null;
 
-    if (!audioUrl)
+  try {
+    if (!req.files || !req.files.audio) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يرجى إرسال رابط الصوت: audioUrl",
+        message: "⚠️ يجب إرسال ملف صوتي",
       });
+    }
 
-    const aha = new AhaMusicAPI();
-    const result = await aha.detectFromUrl(audioUrl);
+    const audioFile = req.files.audio;
+    tempPath = `./tmp/aha_${Date.now()}.mp3`;
 
-    if (!result?.data?.title)
-      return res.json({
+    // حفظ الملف مؤقتاً
+    await audioFile.mv(tempPath);
+
+    // قراءة الملف
+    const audioBuffer = fs.readFileSync(tempPath);
+
+    // استدعاء API
+    const ahaMusic = new AhaMusicAPI();
+    const result = await ahaMusic.detectSong(audioBuffer);
+
+    if (!result?.data?.title) {
+      return res.status(404).json({
         status: false,
-        message: "❌ لم يتم التعرف على الأغنية",
+        message: "❌ لم أستطع التعرف على الأغنية",
       });
+    }
+
+    const { title, artists } = result.data;
 
     res.json({
       status: true,
-      message: "✅ تم التعرف على الأغنية بنجاح",
-      response: {
-        title: result.data.title,
-        artists: result.data.artists,
+      message: "🎶 تم التعرف على الأغنية!",
+      data: {
+        title,
+        artists,
       },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({
       status: false,
-      message: "❌ حدث خطأ أثناء تحليل رابط الصوت",
+      message: "❌ حدث خطأ أثناء تحليل المقطع الصوتي",
       error: err.message,
     });
+  } finally {
+    // حذف الملف المؤقت
+    if (tempPath && fs.existsSync(tempPath)) {
+      try {
+        await unlinkAsync(tempPath);
+      } catch (cleanupErr) {
+        console.error("⚠️ فشل حذف الملف المؤقت:", cleanupErr);
+      }
+    }
   }
 });
 
-/*-----------------------------
-       🎵 GET Route (اختبار)
-------------------------------*/
+/** 🧩 GET Route - للتعرف من رابط مباشر */
 router.get("/", async (req, res) => {
-  res.json({
-    status: true,
-    message: "🎵 AHA Music URL API جاهز",
-    usage: "أرسل POST مع { audioUrl: 'http://example.com/audio.mp3' }",
-  });
+  let tempPath = null;
+
+  try {
+    const { url } = req.query;
+
+    if (!url) {
+      return res.status(400).json({
+        status: false,
+        message: "⚠️ يجب إرسال رابط الملف الصوتي (url)",
+      });
+    }
+
+    // تحميل الملف الصوتي من الرابط
+    const response = await axios.get(url, { responseType: "arraybuffer" });
+    const audioBuffer = Buffer.from(response.data);
+
+    // حفظ مؤقتاً (اختياري - يمكن إرسال Buffer مباشرة)
+    tempPath = `./tmp/aha_${Date.now()}.mp3`;
+    await fs.promises.writeFile(tempPath, audioBuffer);
+
+    // استدعاء API
+    const ahaMusic = new AhaMusicAPI();
+    const result = await ahaMusic.detectSong(audioBuffer);
+
+    if (!result?.data?.title) {
+      return res.status(404).json({
+        status: false,
+        message: "❌ لم أستطع التعرف على الأغنية",
+      });
+    }
+
+    const { title, artists } = result.data;
+
+    res.json({
+      status: true,
+      message: "🎶 تم التعرف على الأغنية!",
+      data: {
+        title,
+        artists,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: false,
+      message: "❌ حدث خطأ أثناء تحليل المقطع الصوتي",
+      error: err.message,
+    });
+  } finally {
+    // حذف الملف المؤقت
+    if (tempPath && fs.existsSync(tempPath)) {
+      try {
+        await unlinkAsync(tempPath);
+      } catch (cleanupErr) {
+        console.error("⚠️ فشل حذف الملف المؤقت:", cleanupErr);
+      }
+    }
+  }
 });
 
 export default router;
