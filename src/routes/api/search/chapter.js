@@ -1,280 +1,149 @@
 import express from "express";
 import axios from "axios";
+import * as cheerio from "cheerio";
+import PDFDocument from "pdfkit";
 
 const router = express.Router();
 
-class MangaChapterAPI {
-  constructor() {
-    this.headers = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-      Referer: "https://www.google.com/",
-    };
-  }
+const DEFAULT_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Linux; Android 14; 22120RN86G) AppleWebKit/537.36 Chrome/141.0.7390.122 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "ar,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+  "Referer": "https://azoramoon.com/"
+};
 
-  /**
-   * استخراج صور الفصل من CSS
-   * @param {string} url - رابط صفحة الفصل
-   * @returns {Promise<Array>} قائمة روابط الصور
-   */
-  async getChapterImages(url) {
-    if (!url) throw new Error("رابط الفصل مطلوب");
-
+class ManhwaPDFAPI {
+  async getChapterImages(chapterUrl) {
     try {
-      const { data } = await axios.get(url, {
-        headers: this.headers,
-        timeout: 20000,
+      const res = await axios.get(chapterUrl, { headers: DEFAULT_HEADERS, timeout: 20000 });
+      const $ = cheerio.load(res.data);
+      const imgs = [];
+
+      $('.reading-content img, img.wp-manga-chapter-img').each((i, el) => {
+        const src = $(el).attr("data-src") || $(el).attr("data-lazy-src") || 
+                    $(el).attr("src") || $(el).attr("data-original");
+        if (src && !imgs.includes(src)) imgs.push(src);
       });
 
-      // استخراج كل روابط الصور من CSS
-      const regex = /background-image:\s*url\(['"]?(.*?)['"]?\)/g;
-      let match;
-      const images = [];
+      const normalized = imgs.map(u => 
+        (u && u.startsWith("http")) ? u : (u ? new URL(u, chapterUrl).href : u)
+      ).filter(Boolean);
+      
+      return normalized;
+    } catch (e) {
+      console.error("getChapterImages error:", e?.message || e);
+      throw new Error("فشل جلب صور الفصل");
+    }
+  }
 
-      while ((match = regex.exec(data)) !== null) {
-        if (match[1]) {
-          images.push(match[1]);
+  async createPDF(chapterUrl, chapterTitle) {
+    try {
+      const images = await this.getChapterImages(chapterUrl);
+      if (!images || !images.length) throw new Error("لم يتم العثور على صور للفصل");
+
+      const doc = new PDFDocument({ autoFirstPage: false, compress: true });
+      const chunks = [];
+      
+      doc.on("data", (c) => chunks.push(c));
+      
+      const endPromise = new Promise((resolve, reject) => {
+        doc.on("end", () => resolve(Buffer.concat(chunks)));
+        doc.on("error", (err) => reject(err));
+      });
+
+      for (let i = 0; i < images.length; i++) {
+        try {
+          const imgUrl = images[i];
+          const resp = await axios.get(imgUrl, { 
+            responseType: "arraybuffer", 
+            headers: { Referer: chapterUrl, ...DEFAULT_HEADERS }, 
+            timeout: 20000 
+          });
+          const imgBuf = Buffer.from(resp.data);
+
+          doc.addPage({ size: "A4", margin: 0 });
+          try {
+            doc.image(imgBuf, 0, 0, { 
+              fit: [595.28, 841.89], 
+              align: "center", 
+              valign: "center" 
+            });
+          } catch (e) {
+            doc.fontSize(12).text(
+              `صورة ${i + 1} لا يمكن عرضها داخل ملف PDF.`, 
+              25, 25, 
+              { width: 545 }
+            );
+          }
+        } catch (errImg) {
+          console.warn("image fetch error:", errImg?.message || errImg);
+          doc.addPage({ size: "A4", margin: 40 });
+          doc.fontSize(12).text(`تعذر تحميل صورة ${i + 1}.`, { align: "left" });
         }
       }
 
-      if (images.length === 0) {
-        throw new Error("لم يتم العثور على صور في هذا الفصل");
-      }
-
-      // ترتيب الصور حسب الرقم
-      images.sort((a, b) => {
-        const getNum = (url) => parseInt(url.match(/image-(\d+)\.webp$/)?.[1] || 0);
-        return getNum(a) - getNum(b);
-      });
-
-      return images;
-    } catch (error) {
-      if (error.response) {
-        throw new Error(`خطأ في الوصول للموقع: ${error.response.status}`);
-      } else if (error.request) {
-        throw new Error("فشل الاتصال بالموقع، تحقق من الرابط");
-      } else {
-        throw new Error(error.message || "خطأ غير معروف");
-      }
+      doc.end();
+      const pdfBuffer = await endPromise;
+      return pdfBuffer;
+    } catch (e) {
+      console.error("createPDF error:", e?.message || e);
+      throw new Error("فشل إنشاء ملف PDF");
     }
-  }
-
-  /**
-   * فحص صلاحية رابط الصورة
-   * @param {string} imageUrl - رابط الصورة
-   * @returns {Promise<boolean>}
-   */
-  async validateImage(imageUrl) {
-    try {
-      const response = await axios.head(imageUrl, {
-        timeout: 5000,
-        validateStatus: (status) => status < 500,
-      });
-      return response.status === 200;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * جلب الصور مع التحقق من الصلاحية
-   * @param {string} url - رابط صفحة الفصل
-   * @param {boolean} validate - التحقق من صلاحية الصور
-   * @returns {Promise<Object>}
-   */
-  async getChapterData(url, validate = false) {
-    const images = await this.getChapterImages(url);
-    
-    let validImages = images;
-    
-    if (validate) {
-      // التحقق من صلاحية كل صورة
-      const validationPromises = images.map(async (img) => {
-        const isValid = await this.validateImage(img);
-        return { url: img, valid: isValid };
-      });
-
-      const results = await Promise.all(validationPromises);
-      validImages = results.filter((r) => r.valid).map((r) => r.url);
-
-      if (validImages.length === 0) {
-        throw new Error("جميع روابط الصور غير صالحة");
-      }
-    }
-
-    return {
-      totalImages: images.length,
-      validImages: validImages.length,
-      images: validImages.map((img, index) => ({
-        page: index + 1,
-        url: img,
-      })),
-    };
   }
 }
 
-/** 🧩 POST Route - جلب صور الفصل */
+/** 📄 POST Route - تحميل الفصل كـ PDF */
 router.post("/", async (req, res) => {
   try {
-    const { url, validate = false, pageRange } = req.body;
-
-    if (!url) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط الفصل مطلوب (url)",
+    const { chapterUrl, chapterTitle = "chapter" } = req.body;
+    if (!chapterUrl) {
+      return res.status(400).json({ 
+        status: false, 
+        message: "⚠️ الرجاء إدخال رابط الفصل" 
       });
     }
 
-    const scraper = new MangaChapterAPI();
-    const result = await scraper.getChapterData(url, validate);
+    const api = new ManhwaPDFAPI();
+    const pdfBuffer = await api.createPDF(chapterUrl, chapterTitle);
 
-    // إذا طلب المستخدم صفحات محددة
-    let images = result.images;
-    if (pageRange && typeof pageRange === "object") {
-      const { start, end } = pageRange;
-      if (start && end) {
-        images = images.slice(start - 1, end);
-      }
-    }
-
-    res.json({
-      status: true,
-      message: "✅ تم جلب صور الفصل بنجاح",
-      totalPages: result.totalImages,
-      validPages: result.validImages,
-      returnedPages: images.length,
-      data: images,
-    });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${chapterTitle}.pdf"`);
+    res.send(pdfBuffer);
   } catch (err) {
-    console.error("❌ خطأ:", err);
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء جلب صور الفصل",
-      error: err.message,
+    console.error(err);
+    res.status(500).json({ 
+      status: false, 
+      message: "❌ حدث خطأ أثناء إنشاء ملف PDF", 
+      error: err.message 
     });
   }
 });
 
-/** 🧩 GET Route - جلب صور الفصل */
+/** 📄 GET Route - تحميل الفصل كـ PDF */
 router.get("/", async (req, res) => {
   try {
-    const { url, validate, start, end } = req.query;
-
-    if (!url) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط الفصل مطلوب (url)",
-        example: "/chapter?url=https://mangatuk.com/manga/solo-leveling/chapter-1/",
+    const chapterUrl = req.query.url;
+    const chapterTitle = req.query.title || "chapter";
+    
+    if (!chapterUrl) {
+      return res.status(400).json({ 
+        status: false, 
+        message: "⚠️ الرجاء إدخال رابط الفصل" 
       });
     }
 
-    const scraper = new MangaChapterAPI();
-    const result = await scraper.getChapterData(url, validate === "true");
+    const api = new ManhwaPDFAPI();
+    const pdfBuffer = await api.createPDF(chapterUrl, chapterTitle);
 
-    // إذا طلب المستخدم صفحات محددة
-    let images = result.images;
-    if (start && end) {
-      const startPage = parseInt(start);
-      const endPage = parseInt(end);
-      
-      if (!isNaN(startPage) && !isNaN(endPage)) {
-        images = images.slice(startPage - 1, endPage);
-      }
-    }
-
-    res.json({
-      status: true,
-      message: "✅ تم جلب صور الفصل بنجاح",
-      totalPages: result.totalImages,
-      validPages: result.validImages,
-      returnedPages: images.length,
-      data: images,
-    });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${chapterTitle}.pdf"`);
+    res.send(pdfBuffer);
   } catch (err) {
-    console.error("❌ خطأ:", err);
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء جلب صور الفصل",
-      error: err.message,
-    });
-  }
-});
-
-/** 🧩 GET Route - جلب صورة واحدة من الفصل */
-router.get("/page/:pageNumber", async (req, res) => {
-  try {
-    const { url } = req.query;
-    const { pageNumber } = req.params;
-
-    if (!url) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط الفصل مطلوب (url)",
-      });
-    }
-
-    const page = parseInt(pageNumber);
-    if (isNaN(page) || page < 1) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رقم الصفحة غير صحيح",
-      });
-    }
-
-    const scraper = new MangaChapterAPI();
-    const result = await scraper.getChapterData(url, false);
-
-    if (page > result.images.length) {
-      return res.status(404).json({
-        status: false,
-        message: `⚠️ الصفحة ${page} غير موجودة. العدد الكلي: ${result.images.length}`,
-      });
-    }
-
-    res.json({
-      status: true,
-      message: "✅ تم جلب الصفحة بنجاح",
-      data: result.images[page - 1],
-    });
-  } catch (err) {
-    console.error("❌ خطأ:", err);
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء جلب الصفحة",
-      error: err.message,
-    });
-  }
-});
-
-/** 🧩 GET Route - عدد صفحات الفصل فقط */
-router.get("/count", async (req, res) => {
-  try {
-    const { url } = req.query;
-
-    if (!url) {
-      return res.status(400).json({
-        status: false,
-        message: "⚠️ رابط الفصل مطلوب (url)",
-      });
-    }
-
-    const scraper = new MangaChapterAPI();
-    const images = await scraper.getChapterImages(url);
-
-    res.json({
-      status: true,
-      message: "✅ تم حساب عدد الصفحات",
-      totalPages: images.length,
-    });
-  } catch (err) {
-    console.error("❌ خطأ:", err);
-    res.status(500).json({
-      status: false,
-      message: "❌ حدث خطأ أثناء حساب الصفحات",
-      error: err.message,
+    console.error(err);
+    res.status(500).json({ 
+      status: false, 
+      message: "❌ حدث خطأ أثناء إنشاء ملف PDF", 
+      error: err.message 
     });
   }
 });
