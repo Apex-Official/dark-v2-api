@@ -4,126 +4,113 @@ import * as cheerio from "cheerio";
 
 const router = express.Router();
 
-class SimpleMangaSearch {
-  constructor() {
-    this.baseUrl = "https://mangatuk.com";
-    this.headers = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-      Referer: "https://www.google.com/",
-    };
-  }
+/**
+ * 🔍 دالة البحث عن المانجا من الموقع
+ */
+async function searchManga(query) {
+  const searchUrl = `https://mangatuk.com/?s=${encodeURIComponent(query)}&post_type=wp-manga`;
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+  };
 
-  async search(query, limit = 10) {
-    if (!query || query.trim() === "") {
-      throw new Error("اسم المانجا مطلوب للبحث");
+  const { data } = await axios.get(searchUrl, { headers });
+  const $ = cheerio.load(data);
+
+  const results = [];
+  $(".c-tabs-item__content").each((i, el) => {
+    if (i >= 10) return; // أول 10 نتائج فقط
+    const title = $(el).find(".post-title a").text().trim();
+    const link = $(el).find(".post-title a").attr("href");
+    const img = $(el).find("img").attr("data-src");
+    
+    if (title && link) {
+      results.push({ title, link, img });
     }
+  });
 
-    const searchQuery = encodeURIComponent(query.trim());
-    const searchUrl = `${this.baseUrl}/?s=${searchQuery}&post_type=wp-manga`;
-
-    try {
-      const { data } = await axios.get(searchUrl, {
-        headers: this.headers,
-        timeout: 15000,
-      });
-
-      const $ = cheerio.load(data);
-      const results = [];
-
-      $(".c-tabs-item__content").each((i, el) => {
-        if (i >= limit) return false;
-
-        const title = $(el).find(".post-title a").text().trim();
-        const link = $(el).find(".post-title a").attr("href");
-
-        if (title && link) {
-          results.push({
-            title,
-            link,
-          });
-        }
-      });
-
-      if (results.length === 0) {
-        throw new Error(`لم يتم العثور على أي نتائج لـ: ${query}`);
-      }
-
-      return results;
-    } catch (error) {
-      if (error.response) {
-        throw new Error(`خطأ في الوصول للموقع: ${error.response.status}`);
-      } else if (error.request) {
-        throw new Error("فشل الاتصال بالموقع");
-      } else {
-        throw new Error(error.message || "خطأ غير معروف");
-      }
-    }
-  }
+  return results;
 }
 
-// ✅ تغيير المسار من /search إلى /mangas
-router.get("/mangas", async (req, res) => {
+/**
+ * 📝 POST Route - البحث عن مانجا
+ */
+router.post("/", async (req, res) => {
   try {
-    const { query, limit } = req.query;
+    const { query } = req.body;
 
-    if (!query) {
+    if (!query || typeof query !== "string" || query.trim() === "") {
       return res.status(400).json({
         status: false,
-        message: "⚠️ اسم المانجا مطلوب (query)",
-        example: "/api/v1/search/mangas?query=solo+leveling&limit=5",
+        message: "⚠️ برجاء إدخال اسم المانجا (query)",
       });
     }
 
-    const searchLimit = limit ? parseInt(limit) : 10;
-    const api = new SimpleMangaSearch();
-    const results = await api.search(query, searchLimit);
+    const results = await searchManga(query.trim());
+
+    if (results.length === 0) {
+      return res.status(404).json({
+        status: false,
+        message: `❌ لم يتم العثور على أي مانجا باسم: ${query}`,
+        results: [],
+      });
+    }
 
     res.json({
       status: true,
-      message: "✅ تم البحث بنجاح",
-      query,
-      totalResults: results.length,
-      data: results,
+      message: "✅ تم العثور على النتائج بنجاح",
+      query: query,
+      count: results.length,
+      results: results,
     });
   } catch (err) {
-    console.error("❌ خطأ:", err);
+    console.error("Error in POST /manga:", err);
     res.status(500).json({
       status: false,
-      message: "❌ حدث خطأ أثناء البحث",
+      message: "❌ حدث خطأ أثناء البحث عن المانجا",
       error: err.message,
     });
   }
 });
 
-router.post("/mangas", async (req, res) => {
+/**
+ * 🔍 GET Route - البحث عن مانجا
+ */
+router.get("/", async (req, res) => {
   try {
-    const { query, limit = 10 } = req.body;
+    const query = req.query.query || req.query.q;
 
-    if (!query) {
+    if (!query || typeof query !== "string" || query.trim() === "") {
       return res.status(400).json({
         status: false,
-        message: "⚠️ اسم المانجا مطلوب (query)",
+        message: "⚠️ برجاء إدخال اسم المانجا في query parameter (query أو q)",
+        example: "/manga?query=سولو",
       });
     }
 
-    const api = new SimpleMangaSearch();
-    const results = await api.search(query, limit);
+    const results = await searchManga(query.trim());
+
+    if (results.length === 0) {
+      return res.status(404).json({
+        status: false,
+        message: `❌ لم يتم العثور على أي مانجا باسم: ${query}`,
+        results: [],
+      });
+    }
 
     res.json({
       status: true,
-      message: "✅ تم البحث بنجاح",
-      query,
-      totalResults: results.length,
-      data: results,
+      message: "✅ تم العثور على النتائج بنجاح",
+      query: query,
+      count: results.length,
+      results: results,
     });
   } catch (err) {
-    console.error("❌ خطأ:", err);
+    console.error("Error in GET /manga:", err);
     res.status(500).json({
       status: false,
-      message: "❌ حدث خطأ أثناء البحث",
+      message: "❌ حدث خطأ أثناء البحث عن المانجا",
       error: err.message,
     });
   }
