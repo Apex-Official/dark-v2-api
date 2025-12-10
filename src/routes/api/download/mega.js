@@ -34,14 +34,25 @@ class MegaDownloader {
 
   validateUrl(url) {
     // التحقق من صحة رابط Mega
-    const megaRegex = /mega\.nz\/(file|folder)\/[a-zA-Z0-9_-]+#[a-zA-Z0-9_-]+/;
+    const megaRegex = /mega\.nz\/(file|folder)\/[a-zA-Z0-9_-]+[#!][a-zA-Z0-9_-]+/;
     if (!megaRegex.test(url)) {
       throw new Error("رابط Mega غير صالح. يجب أن يحتوي على hash (#). مثال: https://mega.nz/file/xxxxx#yyyyy");
     }
   }
 
+  normalizeUrl(url) {
+    // تحويل ! إلى # إذا لزم الأمر (بعض روابط Mega تستخدم !)
+    if (url.includes('!') && !url.includes('#')) {
+      url = url.replace('!', '#');
+    }
+    return url;
+  }
+
   async download(url) {
     if (!url) throw new Error("رابط Mega مطلوب");
+
+    // تطبيع الرابط
+    url = this.normalizeUrl(url);
 
     // التحقق من صحة الرابط
     this.validateUrl(url);
@@ -104,12 +115,23 @@ router.post("/", async (req, res) => {
 /** 🧩 GET Route */
 router.get("/", async (req, res) => {
   try {
-    const url = req.query.url;
+    // دمج الرابط الكامل من query string
+    let url = req.query.url;
+    
+    // إذا كان الرابط لا يحتوي على # ، نحاول استرجاعه من الـ hash
+    if (url && !url.includes('#') && req.url.includes('#')) {
+      const fullUrl = req.url.split('url=')[1];
+      if (fullUrl) {
+        url = decodeURIComponent(fullUrl);
+      }
+    }
+
     if (!url) {
       return res.status(400).json({ 
         status: false, 
         message: "⚠️ رابط Mega مطلوب (url)",
-        example: "https://mega.nz/file/ovJTHaQZ#yAbkrvQgykcH_NDKQ8eIc0zvsN7jonBbHZ_HTQL6lZ8"
+        example: "/mega?url=https://mega.nz/file/ovJTHaQZ%23yAbkrvQgykcH_NDKQ8eIc0zvsN7jonBbHZ_HTQL6lZ8",
+        note: "يجب استخدام %23 بدلاً من # في GET request"
       });
     }
 
