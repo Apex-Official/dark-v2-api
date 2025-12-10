@@ -1,11 +1,8 @@
 import express from "express";
 import axios from "axios";
 import FormData from "form-data";
-import fs from "fs";
-import { promisify } from "util";
 
 const router = express.Router();
-const unlinkAsync = promisify(fs.unlink);
 
 class AhaMusicAPI {
   constructor() {
@@ -21,6 +18,7 @@ class AhaMusicAPI {
 
   async detectSong(audioBuffer) {
     const form = new FormData();
+    // نمرّر البافر مباشرةً مع اسم و contentType
     form.append("file", audioBuffer, {
       filename: "audio.mp3",
       contentType: "audio/mp3",
@@ -34,34 +32,30 @@ class AhaMusicAPI {
       },
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
+      // يمكنك ضبط timeout إذا رغبت
+      timeout: 30000,
     });
 
     return response.data;
   }
 }
 
-/** 🧩 POST Route - للرفع المباشر للملف الصوتي */
+/** 🧩 POST Route - رفع ملف مباشر (لا تخزين على القرص) */
 router.post("/", async (req, res) => {
-  let tempPath = null;
-
   try {
-    if (!req.files || !req.files.audio) {
+    // دعم express-fileupload (req.files.audio.data) أو multer (req.file.buffer)
+    const audioBuffer =
+      req.files?.audio?.data ?? // express-fileupload
+      req.file?.buffer ?? // multer single()
+      null;
+
+    if (!audioBuffer) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يجب إرسال ملف صوتي",
+        message: "⚠️ يجب إرسال ملف صوتي (multipart/form-data)",
       });
     }
 
-    const audioFile = req.files.audio;
-    tempPath = `./tmp/aha_${Date.now()}.mp3`;
-
-    // حفظ الملف مؤقتاً
-    await audioFile.mv(tempPath);
-
-    // قراءة الملف
-    const audioBuffer = fs.readFileSync(tempPath);
-
-    // استدعاء API
     const ahaMusic = new AhaMusicAPI();
     const result = await ahaMusic.detectSong(audioBuffer);
 
@@ -69,6 +63,7 @@ router.post("/", async (req, res) => {
       return res.status(404).json({
         status: false,
         message: "❌ لم أستطع التعرف على الأغنية",
+        raw: result ?? null,
       });
     }
 
@@ -83,28 +78,17 @@ router.post("/", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
+    console.error("POST /aha error:", err);
     res.status(500).json({
       status: false,
       message: "❌ حدث خطأ أثناء تحليل المقطع الصوتي",
       error: err.message,
     });
-  } finally {
-    // حذف الملف المؤقت
-    if (tempPath && fs.existsSync(tempPath)) {
-      try {
-        await unlinkAsync(tempPath);
-      } catch (cleanupErr) {
-        console.error("⚠️ فشل حذف الملف المؤقت:", cleanupErr);
-      }
-    }
   }
 });
 
-/** 🧩 GET Route - للتعرف من رابط مباشر */
+/** 🧩 GET Route - للتعرف من رابط مباشر (لا تخزين على القرص) */
 router.get("/", async (req, res) => {
-  let tempPath = null;
-
   try {
     const { url } = req.query;
 
@@ -115,15 +99,10 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // تحميل الملف الصوتي من الرابط
+    // تحميل الملف كـ arraybuffer ثم تحويله إلى Buffer
     const response = await axios.get(url, { responseType: "arraybuffer" });
     const audioBuffer = Buffer.from(response.data);
 
-    // حفظ مؤقتاً (اختياري - يمكن إرسال Buffer مباشرة)
-    tempPath = `./tmp/aha_${Date.now()}.mp3`;
-    await fs.promises.writeFile(tempPath, audioBuffer);
-
-    // استدعاء API
     const ahaMusic = new AhaMusicAPI();
     const result = await ahaMusic.detectSong(audioBuffer);
 
@@ -131,6 +110,7 @@ router.get("/", async (req, res) => {
       return res.status(404).json({
         status: false,
         message: "❌ لم أستطع التعرف على الأغنية",
+        raw: result ?? null,
       });
     }
 
@@ -145,21 +125,12 @@ router.get("/", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
+    console.error("GET /aha error:", err);
     res.status(500).json({
       status: false,
       message: "❌ حدث خطأ أثناء تحليل المقطع الصوتي",
       error: err.message,
     });
-  } finally {
-    // حذف الملف المؤقت
-    if (tempPath && fs.existsSync(tempPath)) {
-      try {
-        await unlinkAsync(tempPath);
-      } catch (cleanupErr) {
-        console.error("⚠️ فشل حذف الملف المؤقت:", cleanupErr);
-      }
-    }
   }
 });
 
