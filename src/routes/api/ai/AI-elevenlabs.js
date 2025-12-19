@@ -1,16 +1,16 @@
+// eleven-tts-router.js
 import express from "express";
-import { exec } from "child_process";
-import { promisify } from "util";
-import fs from "fs";
-import path from "path";
-import FormData from "form-data";
 import axios from "axios";
+import FormData from "form-data";
 
-const execAsync = promisify(exec);
 const router = express.Router();
 
+// <-- ضع هنا مفتاحك الحقيقي أو استخدم متغير بيئة بدل السطر التالي -->
 const ELEVEN_API_KEY = "sk_536d8ab4ac257dae2ca1858ec36c7733bbd51fd3d739d27f";
 
+/* -------------------------------------------
+🗣️ قائمة الأصوات
+------------------------------------------- */
 const voices = [
   { arName: "ليانا", id: "Xb7hH8MSUJpSbSDYk0k2", desc: "صوت أنثوي واضح ومشرق" },
   { arName: "ميرال", id: "XB0fDUnXU5powFXDhCwa", desc: "صوت ناعم ودافئ" },
@@ -38,125 +38,189 @@ const voices = [
   { arName: "ليو", id: "29vD33N1CtxCmqQRPOHJ", desc: "صوت أمريكي حيوي" },
 ];
 
-// إنشاء مجلد tmp إذا لم يكن موجوداً
-const tmpDir = path.join(process.cwd(), "tmp");
-if (!fs.existsSync(tmpDir)) {
-  fs.mkdirSync(tmpDir, { recursive: true });
+/* -------------------------------------------
+🔁 قائمة بروكسيات (جرب واحدة تلو الأخرى)
+يمكنك تعديل أو إضافة بروكسيات عند الحاجة
+------------------------------------------- */
+const PROXIES = [
+  "https://cors.caliph.my.id/",
+  "https://cors.eu.org/",
+  "https://thingproxy.freeboard.io/fetch/",
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+/* -------------------------------------------
+مساعد لبناء رابط محاط بالبروكسي
+يدعم السلاسل والدوال في PROXIES
+------------------------------------------- */
+function buildProxyUrl(originalUrl, proxy) {
+  if (typeof proxy === "function") return proxy(originalUrl);
+  const sep = proxy.endsWith("/") ? "" : "/";
+  return `${proxy}${sep}${originalUrl.replace(/^https?:\/\//, "")}`;
 }
 
-// رفع الملف على Catbox
-async function uploadToCatbox(filePath) {
+/* -------------------------------------------
+رفع الـ buffer إلى Catbox
+------------------------------------------- */
+async function uploadBufferToCatbox(buffer) {
   const form = new FormData();
   form.append("reqtype", "fileupload");
-  form.append("fileToUpload", fs.createReadStream(filePath));
-
-  const response = await axios.post("https://catbox.moe/user/api.php", form, {
-    headers: form.getHeaders(),
+  form.append("fileToUpload", buffer, {
+    filename: "audio.mp3",
+    contentType: "audio/mpeg",
   });
 
-  return response.data.trim();
+  const res = await axios.post("https://catbox.moe/user/api.php", form, {
+    headers: form.getHeaders(),
+    timeout: 60000,
+  });
+
+  return res.data;
 }
 
-// توليد الصوت باستخدام curl (نفس طريقة البوت)
-async function generateAudio(voiceId, text) {
-  const filePath = path.join(tmpDir, `tts-${Date.now()}.mp3`);
-  
-  const cmd = `curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voiceId}" \
-    -H "xi-api-key: ${ELEVEN_API_KEY}" \
-    -H "Content-Type: application/json" \
-    -d '{ "text": "${text.replace(/"/g, '\\"')}", "voice_settings": { "stability": 0.7, "similarity_boost": 0.9 } }' \
-    --output ${filePath}`;
-
-  await execAsync(cmd);
-  
-  // تحقق من وجود الملف
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
-    throw new Error("فشل توليد الصوت");
+/* -------------------------------------------
+🎧 ElevenLabsTTS class (بدون Google fallback)
+------------------------------------------- */
+class ElevenLabsTTS {
+  constructor() {
+    this.apiKey = ELEVEN_API_KEY;
+    this.baseUrl = "https://api.elevenlabs.io/v1/text-to-speech/";
+    this.proxies = PROXIES;
   }
 
-  return filePath;
+  async tryElevenDirect(voiceId, text) {
+    const url = `${this.baseUrl}${voiceId}`;
+    const body = { text, voice_settings: { stability: 0.7, similarity_boost: 0.9 } };
+    return axios.post(url, body, {
+      headers: {
+        "xi-api-key": this.apiKey,
+        "Content-Type": "application/json",
+      },
+      responseType: "arraybuffer",
+      timeout: 30000,
+      validateStatus: (s) => s < 500,
+    });
+  }
+
+  async tryElevenViaProxy(proxyItem, voiceId, text) {
+    const target = `${this.baseUrl}${voiceId}`;
+    const proxied = buildProxyUrl(target, proxyItem);
+    const body = { text, voice_settings: { stability: 0.7, similarity_boost: 0.9 } };
+
+    return axios.post(proxied, body, {
+      headers: {
+        "xi-api-key": this.apiKey,
+        "Content-Type": "application/json",
+      },
+      responseType: "arraybuffer",
+      timeout: 35000,
+      validateStatus: (s) => s < 500,
+    });
+  }
+
+  async generate({ voiceId, text }) {
+    let lastError = null;
+
+    // 1) محاولة مباشرة
+    try {
+      const res = await this.tryElevenDirect(voiceId, text);
+      // تحويل إلى نص آمن لفحص رسائل نصية مثل DEPLOYMENT_DISABLED
+      const asText = Buffer.from(res.data || []).toString("utf8").toLowerCase();
+      if (res.status === 402 || asText.includes("deployment_disabled") || asText.includes("payment required")) {
+        throw new Error(`ElevenLabs: payment/deployment disabled (status ${res.status})`);
+      }
+      return await this._onSuccess(Buffer.from(res.data));
+    } catch (e) {
+      lastError = e;
+    }
+
+    // 2) تجربة عبر البروكسيات
+    for (const p of this.proxies) {
+      try {
+        const pres = await this.tryElevenViaProxy(p, voiceId, text);
+        const asText = Buffer.from(pres.data || []).toString("utf8").toLowerCase();
+        if (pres.status === 402 || asText.includes("deployment_disabled") || asText.includes("payment required")) {
+          // نعتبرها فشل ونكمل إلى البروكسي التالي
+          lastError = new Error(`proxy responded with payment/deploy disabled (proxy ${p})`);
+          continue;
+        }
+        return await this._onSuccess(Buffer.from(pres.data));
+      } catch (e) {
+        lastError = e;
+        // استمر إلى البروكسي التالي
+      }
+    }
+
+    // 3) فشل كل المحاولات -> ارجع خطأ واضح (بدون fallback خارجي)
+    throw new Error(`فشل توليد الصوت عبر ElevenLabs و البروكسيات. آخر خطأ: ${lastError?.message || "Unknown"}`);
+  }
+
+  async _onSuccess(buffer) {
+    // ارفع على Catbox
+    const url = await uploadBufferToCatbox(buffer);
+    return { url, mimetype: "audio/mpeg" };
+  }
 }
 
-// POST endpoint
+/* -------------------------------------------
+Routes
+------------------------------------------- */
+
+/* POST /  { voice, text } */
 router.post("/", async (req, res) => {
-  let filePath = null;
   try {
     const { voice, text } = req.body;
-
-    if (!voice || !text) {
-      return res.json({ status: false, message: "ارسل voice و text" });
-    }
+    if (!voice || !text) return res.json({ status: false, message: "ارسل voice و text" });
 
     const voiceObj = voices.find((v) => v.arName === voice);
-    if (!voiceObj) {
-      return res.json({ status: false, message: "الصوت غير موجود" });
-    }
+    if (!voiceObj) return res.json({ status: false, message: "الصوت غير موجود" });
 
-    // توليد الصوت
-    filePath = await generateAudio(voiceObj.id, text);
+    const tts = new ElevenLabsTTS();
+    const result = await tts.generate({ voiceId: voiceObj.id, text });
 
-    // رفع على Catbox
-    const url = await uploadToCatbox(filePath);
-
-    res.json({
-      status: true,
-      voice,
-      url,
-    });
+    res.json({ status: true, voice, url: result.url });
   } catch (e) {
-    console.error(e);
-    res.json({ status: false, error: e.message });
-  } finally {
-    // حذف الملف المؤقت
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    // حاول استخراج رسالة من e.response إذا موجودة
+    let errMsg = e?.message || e?.toString?.() || "Unknown error";
+    try {
+      if (e.response && e.response.data) {
+        const maybeText = Buffer.from(e.response.data).toString("utf8");
+        if (maybeText) errMsg = `${errMsg} - response: ${maybeText.slice(0, 500)}`;
+      }
+    } catch (xx) {}
+    res.json({ status: false, error: errMsg });
   }
 });
 
-// GET endpoint
+/* GET /?voice=ليانا&text=مرحبا */
 router.get("/", async (req, res) => {
-  let filePath = null;
   try {
     const { voice, text } = req.query;
-
-    if (!voice || !text) {
-      return res.json({ status: false, message: "ارسل voice و text" });
-    }
+    if (!voice || !text) return res.json({ status: false, message: "ارسل voice و text" });
 
     const voiceObj = voices.find((v) => v.arName === voice);
-    if (!voiceObj) {
-      return res.json({ status: false, message: "الصوت غير موجود" });
-    }
+    if (!voiceObj) return res.json({ status: false, message: "الصوت غير موجود" });
 
-    // توليد الصوت
-    filePath = await generateAudio(voiceObj.id, text);
+    const tts = new ElevenLabsTTS();
+    const result = await tts.generate({ voiceId: voiceObj.id, text });
 
-    // رفع على Catbox
-    const url = await uploadToCatbox(filePath);
-
-    res.json({
-      status: true,
-      voice,
-      url,
-    });
+    res.json({ status: true, voice, url: result.url });
   } catch (e) {
-    console.error(e);
-    res.json({ status: false, error: e.message });
-  } finally {
-    // حذف الملف المؤقت
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    let errMsg = e?.message || e?.toString?.() || "Unknown error";
+    try {
+      if (e.response && e.response.data) {
+        const maybeText = Buffer.from(e.response.data).toString("utf8");
+        if (maybeText) errMsg = `${errMsg} - response: ${maybeText.slice(0, 500)}`;
+      }
+    } catch (xx) {}
+    res.json({ status: false, error: errMsg });
   }
 });
 
-// قائمة الأصوات
+/* GET /voices */
 router.get("/voices", (req, res) => {
-  res.json({
-    status: true,
-    voices,
-  });
+  res.json({ status: true, voices });
 });
 
 export default router;
