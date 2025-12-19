@@ -1,15 +1,16 @@
 import express from "express";
-import axios from "axios";
+import { exec } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import path from "path";
 import FormData from "form-data";
+import axios from "axios";
 
+const execAsync = promisify(exec);
 const router = express.Router();
 
-// المفتاح الجديد
 const ELEVEN_API_KEY = "sk_536d8ab4ac257dae2ca1858ec36c7733bbd51fd3d739d27f";
 
-/* -------------------------------------------
-🗣️ قائمة الأصوات
-------------------------------------------- */
 const voices = [
   { arName: "ليانا", id: "Xb7hH8MSUJpSbSDYk0k2", desc: "صوت أنثوي واضح ومشرق" },
   { arName: "ميرال", id: "XB0fDUnXU5powFXDhCwa", desc: "صوت ناعم ودافئ" },
@@ -37,116 +38,120 @@ const voices = [
   { arName: "ليو", id: "29vD33N1CtxCmqQRPOHJ", desc: "صوت أمريكي حيوي" },
 ];
 
-/* -------------------------------------------
-🎧 Class ElevenLabs + Catbox Upload
-------------------------------------------- */
-class ElevenLabsTTS {
-  constructor() {
-    this.apiKey = ELEVEN_API_KEY;
-    this.baseUrl = "https://api.elevenlabs.io/v1/text-to-speech/";
-  }
-
-  async generate({ voiceId, text }) {
-    // توليد الصوت من ElevenLabs
-    const response = await axios.post(
-      `${this.baseUrl}${voiceId}`,
-      {
-        text,
-        voice_settings: { stability: 0.7, similarity_boost: 0.9 },
-      },
-      {
-        headers: {
-          "xi-api-key": this.apiKey,
-          "Content-Type": "application/json",
-        },
-        responseType: "arraybuffer",
-      }
-    );
-
-    const audioBuffer = Buffer.from(response.data);
-
-    // رفع الملف على Catbox
-    const catboxUrl = await this.uploadToCatbox(audioBuffer);
-
-    return {
-      url: catboxUrl,
-      mimetype: "audio/mpeg",
-    };
-  }
-
-  async uploadToCatbox(buffer) {
-    const form = new FormData();
-    form.append("reqtype", "fileupload");
-    form.append("fileToUpload", buffer, {
-      filename: "audio.mp3",
-      contentType: "audio/mpeg",
-    });
-
-    const response = await axios.post("https://catbox.moe/user/api.php", form, {
-      headers: form.getHeaders(),
-    });
-
-    return response.data; // الرابط المباشر
-  }
+// إنشاء مجلد tmp إذا لم يكن موجوداً
+const tmpDir = path.join(process.cwd(), "tmp");
+if (!fs.existsSync(tmpDir)) {
+  fs.mkdirSync(tmpDir, { recursive: true });
 }
 
-/* -------------------------------------------
-🧩 POST - Body { voice, text }
-------------------------------------------- */
+// رفع الملف على Catbox
+async function uploadToCatbox(filePath) {
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("fileToUpload", fs.createReadStream(filePath));
+
+  const response = await axios.post("https://catbox.moe/user/api.php", form, {
+    headers: form.getHeaders(),
+  });
+
+  return response.data.trim();
+}
+
+// توليد الصوت باستخدام curl (نفس طريقة البوت)
+async function generateAudio(voiceId, text) {
+  const filePath = path.join(tmpDir, `tts-${Date.now()}.mp3`);
+  
+  const cmd = `curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/${voiceId}" \
+    -H "xi-api-key: ${ELEVEN_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d '{ "text": "${text.replace(/"/g, '\\"')}", "voice_settings": { "stability": 0.7, "similarity_boost": 0.9 } }' \
+    --output ${filePath}`;
+
+  await execAsync(cmd);
+  
+  // تحقق من وجود الملف
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
+    throw new Error("فشل توليد الصوت");
+  }
+
+  return filePath;
+}
+
+// POST endpoint
 router.post("/", async (req, res) => {
+  let filePath = null;
   try {
     const { voice, text } = req.body;
 
-    if (!voice || !text)
+    if (!voice || !text) {
       return res.json({ status: false, message: "ارسل voice و text" });
+    }
 
     const voiceObj = voices.find((v) => v.arName === voice);
-    if (!voiceObj)
+    if (!voiceObj) {
       return res.json({ status: false, message: "الصوت غير موجود" });
+    }
 
-    const tts = new ElevenLabsTTS();
-    const result = await tts.generate({ voiceId: voiceObj.id, text });
+    // توليد الصوت
+    filePath = await generateAudio(voiceObj.id, text);
+
+    // رفع على Catbox
+    const url = await uploadToCatbox(filePath);
 
     res.json({
       status: true,
       voice,
-      url: result.url,
+      url,
     });
   } catch (e) {
+    console.error(e);
     res.json({ status: false, error: e.message });
+  } finally {
+    // حذف الملف المؤقت
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
   }
 });
 
-/* -------------------------------------------
-🧩 GET - Query ?voice=ليانا&text=مرحبا
-------------------------------------------- */
+// GET endpoint
 router.get("/", async (req, res) => {
+  let filePath = null;
   try {
     const { voice, text } = req.query;
 
-    if (!voice || !text)
+    if (!voice || !text) {
       return res.json({ status: false, message: "ارسل voice و text" });
+    }
 
     const voiceObj = voices.find((v) => v.arName === voice);
-    if (!voiceObj)
+    if (!voiceObj) {
       return res.json({ status: false, message: "الصوت غير موجود" });
+    }
 
-    const tts = new ElevenLabsTTS();
-    const result = await tts.generate({ voiceId: voiceObj.id, text });
+    // توليد الصوت
+    filePath = await generateAudio(voiceObj.id, text);
+
+    // رفع على Catbox
+    const url = await uploadToCatbox(filePath);
 
     res.json({
       status: true,
       voice,
-      url: result.url,
+      url,
     });
   } catch (e) {
+    console.error(e);
     res.json({ status: false, error: e.message });
+  } finally {
+    // حذف الملف المؤقت
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
   }
 });
 
-/* -------------------------------------------
-📘 الأصوات
-------------------------------------------- */
+// قائمة الأصوات
 router.get("/voices", (req, res) => {
   res.json({
     status: true,
