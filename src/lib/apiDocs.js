@@ -1,34 +1,57 @@
+import fs from "fs";
+import path from "path";
 import { routeLoader } from "./routesLoader.js";
 
 export function apiDocs(basePath = "/api/v1") {
   return (req, res) => {
-    // Debug مهم
-    console.log("RouteInfo size:", routeLoader.routeInfo.size);
-
     const docs = {};
+    const sectionFilter = req.params.section;
 
-    for (const info of routeLoader.routeInfo.values()) {
-      if (!info.path || !info.path.startsWith(basePath)) continue;
+    routeLoader.routeInfo.forEach(info => {
+      const fullPath = `${info.basePath}${info.routePath}`.replace(/\/+/g, "/");
 
-      const parts = info.path.split("/").filter(Boolean);
-      if (parts.length < 3) continue;
+      const parts = fullPath.split("/").filter(Boolean);
+      if (parts.length < 3) return;
 
       const section = parts[2]; // api/v1/{section}
-      if (!section) continue;
+
+      if (sectionFilter && section !== sectionFilter) return;
 
       if (!docs[section]) docs[section] = [];
 
+      // ==== Auto-detect query params ====
+      let queryParams = [];
+      try {
+        const code = fs.readFileSync(path.resolve(info.file), "utf-8");
+        const matches = code.match(/req\.query\.([a-zA-Z0-9_]+)/g);
+        if (matches) {
+          queryParams = [...new Set(matches.map(m => m.split(".")[2]))];
+        }
+      } catch (e) {
+        // لو حصل أي خطأ في قراءة الملف، نخليه فاضي
+        queryParams = [];
+      }
+
       docs[section].push({
         method: info.method,
-        path: info.path,
-        file: info.file
+        path: fullPath,
+        file: info.file,
+        query: queryParams // 👈 هنا
+      });
+    });
+
+    if (sectionFilter && !docs[sectionFilter]) {
+      return res.status(404).json({
+        error: "Section not found",
+        section: sectionFilter
       });
     }
 
     res.json({
       name: "Dark V2 API",
       version: "v1",
-      sections: Object.keys(docs).length,
+      section: sectionFilter || "all",
+      total: Object.values(docs).flat().length,
       docs
     });
   };
