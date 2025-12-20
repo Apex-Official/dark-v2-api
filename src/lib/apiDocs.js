@@ -1,25 +1,32 @@
 export function apiDocs(app, basePath = "/api/v1") {
   return (req, res) => {
-    const routes = [];
+    const docs = {};
 
-    app._router.stack.forEach((layer) => {
+    app._router.stack.forEach(layer => {
       if (!layer.route) return;
 
-      const path = layer.route.path;
-      const methods = Object.keys(layer.route.methods)
-        .map(m => m.toUpperCase());
+      let routePath = layer.route.path;
+      let fullPath = `${basePath}${routePath}`.replace(/\/+/g, "/");
 
-      routes.push({
-        path: `${basePath}${path}`.replace("//", "/"),
-        methods
+      // /api/v1/section/api
+      let parts = fullPath.split("/").filter(Boolean);
+      let section = parts[2]; // بعد api + v1
+
+      if (!section) return;
+
+      if (!docs[section]) docs[section] = [];
+
+      docs[section].push({
+        path: fullPath,
+        methods: Object.keys(layer.route.methods).map(m => m.toUpperCase())
       });
     });
 
     res.json({
       name: "Dark V2 API",
       version: "v1",
-      totalRoutes: routes.length,
-      routes
+      sections: Object.keys(docs).length,
+      docs
     });
   };
 }
