@@ -2,32 +2,28 @@ import { routeLoader } from "./routesLoader.js";
 
 export function apiDocs(basePath = "/api/v1") {
   return (req, res) => {
+    // Debug مهم
+    console.log("RouteInfo size:", routeLoader.routeInfo.size);
+
     const docs = {};
 
-    routeLoader.routeInfo.forEach(info => {
-      // نتأكد إنه API
-      if (!info.path.startsWith(basePath)) return;
+    for (const info of routeLoader.routeInfo.values()) {
+      if (!info.path || !info.path.startsWith(basePath)) continue;
 
-      // api/v1/{section}/{endpoint}
       const parts = info.path.split("/").filter(Boolean);
-      const section = parts[2]; // بعد api + v1
+      if (parts.length < 3) continue;
 
-      if (!section) return;
+      const section = parts[2]; // api/v1/{section}
+      if (!section) continue;
 
       if (!docs[section]) docs[section] = [];
 
-      // منع التكرار
-      const exists = docs[section].some(
-        r => r.path === info.path && r.method === info.method
-      );
-      if (exists) return;
-
       docs[section].push({
+        method: info.method,
         path: info.path,
-        methods: [info.method],
         file: info.file
       });
-    });
+    }
 
     res.json({
       name: "Dark V2 API",
