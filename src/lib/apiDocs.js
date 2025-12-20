@@ -3,15 +3,22 @@ import { routeLoader } from "./routesLoader.js";
 export function apiDocs(basePath = "/api/v1") {
   return (req, res) => {
     const docs = {};
-    const sectionFilter = req.params.section;
+
+    // ناخد القسم من params أو query
+    const sectionFilter = req.params.section || req.query.section;
 
     routeLoader.routeInfo.forEach(info => {
       const fullPath = `${info.basePath}${info.routePath}`.replace(/\/+/g, "/");
       const parts = fullPath.split("/").filter(Boolean);
-      if (parts.length < 3) return;
-      const section = parts[2];
 
+      // نتأكد إن فيه على الأقل basePath + v1 + section
+      if (parts.length < 3) return;
+
+      const section = parts[2]; // القسم الأساسي
+
+      // لو فيه فلتر للقسم وما هوش مطابق، نرجع
       if (sectionFilter && section !== sectionFilter) return;
+
       if (!docs[section]) docs[section] = [];
 
       docs[section].push({
@@ -20,6 +27,7 @@ export function apiDocs(basePath = "/api/v1") {
       });
     });
 
+    // لو القسم محدد ومش موجود
     if (sectionFilter && !docs[sectionFilter]) {
       return res.status(404).json({
         error: "Section not found",
