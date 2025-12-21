@@ -25,18 +25,60 @@ class ImageUpscaler {
     return Buffer.from(response.data, "binary").toString("base64");
   }
 
+  async sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async getResult(taskId, maxRetries = 30) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        await this.sleep(2000); // انتظار 2 ثانية بين كل محاولة
+
+        const resultResponse = await axios.post(
+          this.resultUrl,
+          { task_id: taskId },
+          { headers: this.headers }
+        );
+
+        // التحقق من حالة النتيجة
+        const data = resultResponse.data.data;
+        
+        if (data && data.output) {
+          return {
+            id: taskId,
+            output: data.output,
+            input: data.input,
+          };
+        }
+
+        // إذا كانت المعالجة لا تزال جارية
+        if (resultResponse.data.data?.status === "processing") {
+          console.log(`⏳ جاري المعالجة... محاولة ${i + 1}/${maxRetries}`);
+          continue;
+        }
+
+      } catch (err) {
+        // إذا كان الخطأ 503 أو مشاكل مؤقتة، نعيد المحاولة
+        if (err.response?.status === 503 || err.code === "ECONNABORTED") {
+          console.log(`⚠️ محاولة ${i + 1}/${maxRetries} - إعادة المحاولة...`);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw new Error("انتهت المحاولات - الصورة لم تكتمل معالجتها");
+  }
+
   async upscale({ imagePath = null, imageUrl = null, imageBase64 = null, model = 3 }) {
     try {
       let base64Data;
 
       if (imageUrl) {
-        // تحميل الصورة من URL
         base64Data = await this.getImageBase64FromUrl(imageUrl);
       } else if (imagePath) {
-        // قراءة الصورة من مسار محلي
         base64Data = await this.getImageBase64FromPath(imagePath);
       } else if (imageBase64) {
-        // استخدام base64 مباشرة
         base64Data = imageBase64;
       } else {
         throw new Error("يجب توفير imageUrl أو imagePath أو imageBase64");
@@ -54,19 +96,12 @@ class ImageUpscaler {
       );
 
       const taskId = createResponse.data.data.id;
+      console.log(`✅ تم إنشاء المهمة: ${taskId}`);
 
-      // الحصول على النتيجة
-      const resultResponse = await axios.post(
-        this.resultUrl,
-        { task_id: taskId },
-        { headers: this.headers }
-      );
+      // الحصول على النتيجة مع إعادة المحاولة
+      const result = await this.getResult(taskId);
 
-      return {
-        id: taskId,
-        output: resultResponse.data.data.output,
-        input: resultResponse.data.data.input,
-      };
+      return result;
     } catch (err) {
       throw new Error(err.message);
     }
