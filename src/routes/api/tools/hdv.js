@@ -1,16 +1,14 @@
 import express from "express";
 import axios from "axios";
-import fs from "fs";
 import crypto from "crypto";
 import FormData from "form-data";
-import path from "path";
+import { Readable } from "stream";
 
 const router = express.Router();
 
 class VideoUpscaler {
   constructor() {
     this.baseApi = "https://api.unblurimage.ai";
-    this.tmpDir = "./tmp";
     this.productSerial = crypto.randomUUID().replace(/-/g, "");
   }
 
@@ -31,18 +29,15 @@ class VideoUpscaler {
     return json;
   }
 
-  async downloadVideo(url, outputPath) {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    fs.writeFileSync(outputPath, Buffer.from(response.data));
-    return outputPath;
+  bufferToStream(buffer) {
+    const readable = new Readable();
+    readable._read = () => {};
+    readable.push(buffer);
+    readable.push(null);
+    return readable;
   }
 
-  async getVideoBase64FromUrl(url) {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    return Buffer.from(response.data, "binary").toString("base64");
-  }
-
-  async uploadVideoToAPI(videoPath) {
+  async uploadVideoToAPI(videoBuffer) {
     const uploadForm = new FormData();
     uploadForm.append("video_file_name", `cli-${Date.now()}.mp4`);
 
@@ -66,8 +61,13 @@ class VideoUpscaler {
       throw new Error("لم يتم العثور على رابط الرفع");
     }
 
-    await axios.put(uploadUrl, fs.createReadStream(videoPath), {
-      headers: { "content-type": "video/mp4" },
+    // رفع الفيديو من الذاكرة مباشرة
+    const stream = this.bufferToStream(videoBuffer);
+    await axios.put(uploadUrl, stream, {
+      headers: { 
+        "content-type": "video/mp4",
+        "content-length": videoBuffer.length 
+      },
     });
 
     return `https://cdn.unblurimage.ai/${object_name}`;
@@ -127,34 +127,26 @@ class VideoUpscaler {
         throw new Error("انتهت مهلة الانتظار لمعالجة الفيديو");
       }
 
-      console.log(`⏳ جاري المعالجة... ${Math.floor((Date.now() - startTime) / 1000)}s`);
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      console.log(`⏳ جاري المعالجة... ${elapsed}s`);
       await this.sleep(10000); // انتظار 10 ثوانٍ
     }
   }
 
-  async upscale({ videoPath = null, videoUrl = null, resolution = "2k" }) {
+  async upscale({ videoUrl, resolution = "2k" }) {
     try {
-      // إنشاء مجلد tmp إذا لم يكن موجوداً
-      if (!fs.existsSync(this.tmpDir)) {
-        fs.mkdirSync(this.tmpDir, { recursive: true });
+      if (!videoUrl) {
+        throw new Error("يجب توفير videoUrl");
       }
 
-      let localVideoPath;
-
-      if (videoUrl) {
-        // تحميل الفيديو من URL
-        localVideoPath = path.join(this.tmpDir, `${Date.now()}_input.mp4`);
-        await this.downloadVideo(videoUrl, localVideoPath);
-      } else if (videoPath) {
-        // استخدام المسار المحلي
-        localVideoPath = videoPath;
-      } else {
-        throw new Error("يجب توفير videoUrl أو videoPath");
-      }
+      // تحميل الفيديو في الذاكرة
+      console.log("📥 جاري تحميل الفيديو...");
+      const response = await axios.get(videoUrl, { responseType: "arraybuffer" });
+      const videoBuffer = Buffer.from(response.data);
 
       // رفع الفيديو إلى API
       console.log("📤 جاري رفع الفيديو...");
-      const cdnUrl = await this.uploadVideoToAPI(localVideoPath);
+      const cdnUrl = await this.uploadVideoToAPI(videoBuffer);
 
       // إنشاء مهمة التحسين
       console.log("🎬 جاري إنشاء مهمة التحسين...");
@@ -163,11 +155,6 @@ class VideoUpscaler {
       // انتظار اكتمال المعالجة
       console.log("⏳ جاري معالجة الفيديو...");
       const outputUrl = await this.waitForJobCompletion(jobId);
-
-      // حذف الملف المؤقت إذا تم تحميله من URL
-      if (videoUrl && fs.existsSync(localVideoPath)) {
-        fs.unlinkSync(localVideoPath);
-      }
 
       return {
         jobId,
@@ -184,17 +171,17 @@ class VideoUpscaler {
 /** 🧩 POST Route */
 router.post("/", async (req, res) => {
   try {
-    const { videoPath, videoUrl, resolution } = req.body;
+    const { videoUrl, resolution } = req.body;
 
-    if (!videoPath && !videoUrl) {
+    if (!videoUrl) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يجب توفير videoUrl أو videoPath",
+        message: "⚠️ يجب توفير videoUrl",
       });
     }
 
     const upscaler = new VideoUpscaler();
-    const result = await upscaler.upscale({ videoPath, videoUrl, resolution });
+    const result = await upscaler.upscale({ videoUrl, resolution });
 
     res.json({
       status: true,
@@ -214,18 +201,17 @@ router.post("/", async (req, res) => {
 /** 🧩 GET Route */
 router.get("/", async (req, res) => {
   try {
-    const { videoPath, videoUrl, resolution } = req.query;
+    const { videoUrl, resolution } = req.query;
 
-    if (!videoPath && !videoUrl) {
+    if (!videoUrl) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يجب توفير videoUrl أو videoPath",
+        message: "⚠️ يجب توفير videoUrl",
       });
     }
 
     const upscaler = new VideoUpscaler();
     const result = await upscaler.upscale({
-      videoPath,
       videoUrl,
       resolution: resolution || "2k",
     });
