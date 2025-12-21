@@ -16,20 +16,30 @@ class ImageUpscaler {
     };
   }
 
-  async getImageBase64(path) {
+  async getImageBase64FromPath(path) {
     return fs.readFileSync(path).toString("base64");
   }
 
-  async upscale({ imagePath = null, imageBase64 = null, model = 3 }) {
+  async getImageBase64FromUrl(url) {
+    const response = await axios.get(url, { responseType: "arraybuffer" });
+    return Buffer.from(response.data, "binary").toString("base64");
+  }
+
+  async upscale({ imagePath = null, imageUrl = null, imageBase64 = null, model = 3 }) {
     try {
       let base64Data;
 
-      if (imagePath) {
-        base64Data = await this.getImageBase64(imagePath);
+      if (imageUrl) {
+        // تحميل الصورة من URL
+        base64Data = await this.getImageBase64FromUrl(imageUrl);
+      } else if (imagePath) {
+        // قراءة الصورة من مسار محلي
+        base64Data = await this.getImageBase64FromPath(imagePath);
       } else if (imageBase64) {
+        // استخدام base64 مباشرة
         base64Data = imageBase64;
       } else {
-        throw new Error("يجب توفير imagePath أو imageBase64");
+        throw new Error("يجب توفير imageUrl أو imagePath أو imageBase64");
       }
 
       // إنشاء مهمة التحسين
@@ -66,17 +76,17 @@ class ImageUpscaler {
 /** 🧩 POST Route */
 router.post("/", async (req, res) => {
   try {
-    const { imagePath, imageBase64, model } = req.body;
+    const { imagePath, imageUrl, imageBase64, model } = req.body;
 
-    if (!imagePath && !imageBase64) {
+    if (!imagePath && !imageUrl && !imageBase64) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يجب توفير imagePath أو imageBase64",
+        message: "⚠️ يجب توفير imageUrl أو imagePath أو imageBase64",
       });
     }
 
     const upscaler = new ImageUpscaler();
-    const result = await upscaler.upscale({ imagePath, imageBase64, model });
+    const result = await upscaler.upscale({ imagePath, imageUrl, imageBase64, model });
 
     res.json({
       status: true,
@@ -96,18 +106,19 @@ router.post("/", async (req, res) => {
 /** 🧩 GET Route */
 router.get("/", async (req, res) => {
   try {
-    const { imagePath, imageBase64, model } = req.query;
+    const { imagePath, imageUrl, imageBase64, model } = req.query;
 
-    if (!imagePath && !imageBase64) {
+    if (!imagePath && !imageUrl && !imageBase64) {
       return res.status(400).json({
         status: false,
-        message: "⚠️ يجب توفير imagePath أو imageBase64",
+        message: "⚠️ يجب توفير imageUrl أو imagePath أو imageBase64",
       });
     }
 
     const upscaler = new ImageUpscaler();
     const result = await upscaler.upscale({
       imagePath,
+      imageUrl,
       imageBase64,
       model: model ? parseInt(model) : 3,
     });
