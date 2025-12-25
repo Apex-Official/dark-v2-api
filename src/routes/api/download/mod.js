@@ -1,237 +1,278 @@
+// routes/traidmode-download.js
 import express from "express";
-import axios from "axios";
+import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
 const router = express.Router();
 
-const SITE_BASE = "https://traidmode.com";
-const IMAGE_URL = "https://qu.ax/zAXgR.jpg";
-const MAX_SEND_BYTES = 250 * 1024 * 1024; // 250 MB
-
-const EXCLUDE_PATH_PREFIXES = [
-  '/', '/blog', '/f-a-q', '/faq', '/contact', '/about',
-  '/category', '/tag', '/page', '/author', '/sitemap',
-  '/privacy', '/terms', '/archive', '/login', '/register'
-];
-const EXCLUDE_TITLE_KEYWORDS = [
-  'home', 'الرئيسية', 'blog', 'faq', 'contact', 'about',
-  'privacy', 'terms', 'category', 'tag'
-];
-
-function defaultHeaders(referer = SITE_BASE) {
-  return {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; 22120RN86G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'ar,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Referer': referer,
-    'Connection': 'keep-alive'
-  };
-}
-
-function resolveAndFilter(href, titleRaw) {
-  try {
-    if (!href || href === '#' || href.trim().length === 0) return null;
-    let resolvedUrl;
-    try {
-      resolvedUrl = new URL(href, SITE_BASE).toString();
-    } catch (e) {
-      return null;
-    }
-    const urlObj = new URL(resolvedUrl);
-    const pathname = urlObj.pathname.replace(/\/+$/, '');
-    const title = (titleRaw || '').toString().trim();
-    const lowerPath = pathname.toLowerCase();
-
-    for (const prefix of EXCLUDE_PATH_PREFIXES) {
-      if (prefix === '/' && (lowerPath === '' || lowerPath === '/')) return null;
-      if (prefix !== '/' && lowerPath.startsWith(prefix)) return null;
-    }
-
-    const lowerTitle = title.toLowerCase();
-    for (const kw of EXCLUDE_TITLE_KEYWORDS) {
-      if (lowerTitle.includes(kw)) return null;
-    }
-
-    if (lowerPath.includes('/?s=') || lowerPath.includes('/page/') || lowerPath.includes('/tag/') || lowerPath.includes('/category/')) {
-      return null;
-    }
-
-    if (urlObj.hostname && !urlObj.hostname.includes('traidmode.com') && !urlObj.pathname.toLowerCase().includes('.apk')) {
-      return null;
-    }
-
-    const finalUrl = resolvedUrl;
-    const finalTitle = title || finalUrl.split('/').pop().split('?')[0] || finalUrl;
-    return { url: finalUrl, title: finalTitle.replace(/\s+/g, ' ').trim() };
-  } catch (e) {
-    return null;
+class TraidModeDownload {
+  constructor() {
+    this.siteBase = "https://traidmode.com";
+    this.maxSendBytes = 250 * 1024 * 1024; // 250 MB
+    this.headers = {
+      "User-Agent": "Mozilla/5.0 (Linux; Android 14)",
+      Accept: "text/html,application/xhtml+xml",
+      Referer: "https://traidmode.com",
+    };
   }
-}
 
-async function searchTraidMode(query) {
-  try {
-    const searchUrl = `${SITE_BASE}/?s=${encodeURIComponent(query)}`;
-    const resp = await axios.get(searchUrl, { headers: defaultHeaders(), timeout: 15000 });
-    const $ = cheerio.load(resp.data);
-    const results = [];
+  extractFromGetUrl(getUrl) {
+    try {
+      const urlObj = new URL(getUrl);
+      const directUrl = urlObj.searchParams.get("urls");
+      const filename = urlObj.searchParams.get("names");
 
-    $('.post, article, .search-result, .app-item').each((i, elem) => {
-      const $elem = $(elem);
-      const link = $elem.find('a').first();
-      const rawHref = link.attr('href') || '';
-      const titleRaw = link.attr('title') || link.text() || $elem.find('h2, h3, .title, .post-title').first().text();
-      const description = $elem.find('.excerpt, .description, p').first().text().trim();
-      const resolved = resolveAndFilter(rawHref, titleRaw);
-      if (!resolved) return;
-      const { url, title } = resolved;
-      results.push({ title, url, description: description || '' });
-    });
+      if (!directUrl) throw new Error("لم يتم العثور على رابط التحميل في معاملات URL");
 
-    if (results.length === 0) {
-      $('a').each((i, elem) => {
-        const $a = $(elem);
-        const href = $a.attr('href') || '';
-        const titleRaw = $a.attr('title') || $a.text().trim();
-        const resolved = resolveAndFilter(href, titleRaw);
-        if (!resolved) return;
-        if (!results.find(r => r.url === resolved.url)) {
-          results.push({ title: resolved.title, url: resolved.url, description: '' });
+      return {
+        url: directUrl,
+        filename: filename
+          ? decodeURIComponent(filename)
+          : directUrl.split("/").pop().split("?")[0],
+        source: "traidmode",
+      };
+    } catch (error) {
+      throw new Error(`خطأ في تحليل رابط Get: ${error.message}`);
+    }
+  }
+
+  async getDirectDownloadLink(pageUrl) {
+    try {
+      let url = pageUrl;
+      if (!url.includes("/download"))
+        url = url.endsWith("/") ? `${url}download/` : `${url}/download/`;
+
+      const response = await fetch(url, {
+        headers: this.headers,
+        redirect: "follow",
+        timeout: 15000,
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+      const html = await response.text();
+      const $ = cheerio.load(html);
+
+      let getLink = null;
+      $("a").each((i, elem) => {
+        const href = $(elem).attr("href");
+        if (href && href.includes("/get/?urls=")) {
+          getLink = href.startsWith("http") ? href : `${this.siteBase}${href}`;
+          return false;
+        }
+        if (href && href.endsWith(".apk")) {
+          getLink = href.startsWith("http") ? href : href;
+          return false;
         }
       });
-    }
 
-    return results.slice(0, 10);
-  } catch (err) {
-    throw new Error(`فشل البحث: ${err.message}`);
+      if (getLink) {
+        if (getLink.includes("/get/?urls=")) return this.extractFromGetUrl(getLink);
+        return {
+          url: getLink,
+          filename: getLink.split("/").pop().split("?")[0],
+          source: "traidmode",
+        };
+      }
+
+      throw new Error("لم يتم العثور على رابط التحميل في الصفحة");
+    } catch (error) {
+      throw new Error(`فشل استخراج الرابط: ${error.message}`);
+    }
+  }
+
+  async downloadFile(fileUrl) {
+    try {
+      const headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14)",
+        Accept: "*/*",
+        Connection: "Keep-Alive",
+      };
+
+      // Get file size
+      let fileSize = 0;
+      try {
+        const headResponse = await fetch(fileUrl, { method: "HEAD", headers, timeout: 10000 });
+        if (headResponse.ok) fileSize = parseInt(headResponse.headers.get("content-length") || "0");
+      } catch {}
+
+      if (fileSize && fileSize > this.maxSendBytes) {
+        const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+        return {
+          success: false,
+          error: "file_too_large",
+          message: `⚠️ الملف كبير جداً (${fileSizeMB} MB) - الحد الأقصى: 250 MB`,
+          fileSize: fileSizeMB,
+          url: fileUrl,
+        };
+      }
+
+      // Download file
+      const response = await fetch(fileUrl, { headers, timeout: 300000 });
+      if (!response.ok) throw new Error(`فشل التحميل: ${response.status}`);
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const actualSize = buffer.length;
+
+      if (actualSize > this.maxSendBytes) {
+        const mb = (actualSize / (1024 * 1024)).toFixed(2);
+        return {
+          success: false,
+          error: "file_too_large",
+          message: `⚠️ الملف بعد التحميل حجمه ${mb} MB - أكبر من الحد المسموح`,
+          fileSize: mb,
+          url: fileUrl,
+        };
+      }
+
+      return {
+        success: true,
+        buffer: buffer,
+        size: actualSize,
+        sizeMB: (actualSize / (1024 * 1024)).toFixed(2),
+      };
+    } catch (error) {
+      throw new Error(`فشل تحميل الملف: ${error.message}`);
+    }
   }
 }
 
-function extractFromGetUrl(getUrl) {
+/** 🧩 POST Route - Get Direct Link */
+router.post("/link", async (req, res) => {
   try {
-    const urlObj = new URL(getUrl);
-    const directUrl = urlObj.searchParams.get('urls');
-    const filename = urlObj.searchParams.get('names');
-    if (!directUrl) throw new Error('لم يتم العثور على رابط التحميل في معاملات URL');
-    return {
-      url: directUrl,
-      filename: filename ? decodeURIComponent(filename) : directUrl.split('/').pop().split('?')[0],
-      source: 'traidmode'
-    };
-  } catch (error) {
-    throw new Error(`خطأ في تحليل رابط Get: ${error.message}`);
-  }
-}
+    const { url } = req.body;
+    if (!url)
+      return res.status(400).json({ status: false, message: "⚠️ رابط الصفحة مطلوب (url)" });
 
-async function getDirectDownloadLink(pageUrl) {
-  try {
-    let url = pageUrl;
-    if (url.includes('/get/?urls=')) {
-      return extractFromGetUrl(url);
+    const traidDownload = new TraidModeDownload();
+    const directLink = await traidDownload.getDirectDownloadLink(url);
+
+    if (!directLink || !directLink.url) {
+      return res
+        .status(500)
+        .json({ status: false, message: "❌ تعذّر استخراج رابط التحميل المباشر" });
     }
-    if (!url.includes('/download')) url = url.endsWith('/') ? `${url}download/` : `${url}/download/`;
 
-    const resp = await axios.get(url, { headers: defaultHeaders(), timeout: 15000 });
-    const $ = cheerio.load(resp.data);
-
-    let getLink = null;
-    $('a').each((i, elem) => {
-      const href = $(elem).attr('href');
-      if (href && href.includes('/get/?urls=')) {
-        getLink = href.startsWith('http') ? href : `${SITE_BASE}${href}`;
-        return false;
-      }
-      if (href && (href.endsWith('.apk') || href.includes('.apk'))) {
-        getLink = href.startsWith('http') ? href : href;
-        return false;
-      }
+    res.json({
+      status: true,
+      message: "✅ تم استخراج الرابط بنجاح",
+      data: directLink,
     });
-
-    if (getLink) {
-      if (getLink.includes('/get/?urls=')) return extractFromGetUrl(getLink);
-      return { url: getLink, filename: getLink.split('/').pop().split('?')[0], source: 'traidmode' };
-    }
-
-    throw new Error("لم يتم العثور على رابط التحميل في الصفحة");
   } catch (err) {
-    throw new Error(`فشل استخراج الرابط: ${err.message}`);
+    console.error(err);
+    res.status(500).json({
+      status: false,
+      message: "❌ حدث خطأ أثناء استخراج الرابط",
+      error: err.message,
+    });
   }
-}
+});
 
-async function getRemoteFileSize(url) {
+/** 🧩 POST Route - Download File */
+router.post("/file", async (req, res) => {
   try {
-    const head = await axios.head(url, { headers: { 'User-Agent': defaultHeaders().['User-Agent'], 'Referer': SITE_BASE }, timeout: 10000 });
-    const len = parseInt(head.headers['content-length'] || '0');
-    return isNaN(len) ? 0 : len;
-  } catch (e) {
-    return 0; // لا نفشل إن لم تتوفر معلومات الحجم
-  }
-}
+    const { url, filename } = req.body;
+    if (!url)
+      return res.status(400).json({ status: false, message: "⚠️ رابط التحميل مطلوب (url)" });
 
-function sanitizeFilename(name) {
-  return name.replace(/[^a-zA-Z0-9\u0600-\u06FF\.\-_]/g, '_').slice(0, 240) || 'file.apk';
-}
+    const traidDownload = new TraidModeDownload();
+    const result = await traidDownload.downloadFile(url);
 
-// POST / -> body: { query: "gta" }
-// يقوم بالبحث، يختار أول نتيجة صالحة، يستخرج رابط التحميل ويحاول إرساله مباشرة.
-router.post("/", async (req, res) => {
-  try {
-    const query = req.body?.query || req.query?.query;
-    if (!query) return res.status(400).json({ status: false, message: "⚠️ الحقل 'query' مطلوب." });
-
-    // 1) بحث
-    const results = await searchTraidMode(query);
-    if (!results || results.length === 0) {
-      return res.status(404).json({ status: false, message: "❌ لم تُعثر أي نتائج صالحة." });
-    }
-
-    // 2) اختر أول نتيجة
-    const first = results[0];
-
-    // 3) استخراج رابط التحميل المباشر
-    const direct = await getDirectDownloadLink(first.url);
-    if (!direct || !direct.url) {
-      return res.status(500).json({ status: false, message: "❌ تعذّر استخراج رابط التحميل المباشر." });
-    }
-
-    // 4) تحقق من الحجم عبر HEAD (إن أمكن)
-    const remoteSize = await getRemoteFileSize(direct.url);
-    if (remoteSize && remoteSize > MAX_SEND_BYTES) {
-      return res.json({
-        status: true,
-        message: "⚠️ الملف كبير جداً للإرسال عبر HTTP (حد السيرفر: 250 MB). أعد المحاولة بالتحميل المباشر.",
-        file: { filename: direct.filename || null, size_bytes: remoteSize },
-        download_link: direct.url,
-        source_page: first.url,
-        selected_title: first.title
+    if (!result.success) {
+      return res.status(400).json({
+        status: false,
+        message: result.message,
+        error: result.error,
+        fileSize: result.fileSize,
+        url: result.url,
       });
     }
 
-    // 5) تنزيل الملف (arraybuffer)
-    const dlResp = await axios.get(direct.url, { responseType: "arraybuffer", headers: { 'User-Agent': defaultHeaders().['User-Agent'], 'Referer': SITE_BASE }, timeout: 300000 });
-    const buffer = Buffer.from(dlResp.data);
-    const actualSize = buffer.length;
-    if (actualSize > MAX_SEND_BYTES) {
-      return res.json({
-        status: true,
-        message: "⚠️ الملف بعد التنزيل أكبر من الحد المسموح (250 MB). استخدم الرابط المباشر.",
-        file: { filename: direct.filename || null, size_bytes: actualSize },
-        download_link: direct.url,
-        source_page: first.url,
-        selected_title: first.title
+    const finalFilename = filename || url.split("/").pop().split("?")[0] || "file.apk";
+
+    res.setHeader("Content-Type", "application/vnd.android.package-archive");
+    res.setHeader("Content-Disposition", `attachment; filename="${finalFilename}"`);
+    res.setHeader("Content-Length", result.size);
+
+    res.send(result.buffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: false,
+      message: "❌ حدث خطأ أثناء تحميل الملف",
+      error: err.message,
+    });
+  }
+});
+
+/** 🧩 GET Route - Get Direct Link */
+router.get("/link", async (req, res) => {
+  try {
+    const url = req.query.url;
+    if (!url)
+      return res.status(400).json({ status: false, message: "⚠️ رابط الصفحة مطلوب (url)" });
+
+    const traidDownload = new TraidModeDownload();
+    const directLink = await traidDownload.getDirectDownloadLink(url);
+
+    if (!directLink || !directLink.url) {
+      return res
+        .status(500)
+        .json({ status: false, message: "❌ تعذّر استخراج رابط التحميل المباشر" });
+    }
+
+    res.json({
+      status: true,
+      message: "✅ تم استخراج الرابط بنجاح",
+      data: directLink,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      status: false,
+      message: "❌ حدث خطأ أثناء استخراج الرابط",
+      error: err.message,
+    });
+  }
+});
+
+/** 🧩 GET Route - Download File */
+router.get("/file", async (req, res) => {
+  try {
+    const url = req.query.url;
+    const filename = req.query.filename;
+
+    if (!url)
+      return res.status(400).json({ status: false, message: "⚠️ رابط التحميل مطلوب (url)" });
+
+    const traidDownload = new TraidModeDownload();
+    const result = await traidDownload.downloadFile(url);
+
+    if (!result.success) {
+      return res.status(400).json({
+        status: false,
+        message: result.message,
+        error: result.error,
+        fileSize: result.fileSize,
+        url: result.url,
       });
     }
 
-    const filename = sanitizeFilename(direct.filename || direct.url.split('/').pop().split('?')[0] || `${first.title}.apk`);
+    const finalFilename = filename || url.split("/").pop().split("?")[0] || "file.apk";
 
-    // 6) أعد إرسال الملف كـ attachment
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Length', String(actualSize));
-    return res.send(buffer);
+    res.setHeader("Content-Type", "application/vnd.android.package-archive");
+    res.setHeader("Content-Disposition", `attachment; filename="${finalFilename}"`);
+    res.setHeader("Content-Length", result.size);
 
+    res.send(result.buffer);
   } catch (err) {
-    console.error("TraidMode Router Error:", err);
-    return res.status(500).json({ status: false, message: "❌ حدث خطأ داخلي", error: err.message });
+    console.error(err);
+    res.status(500).json({
+      status: false,
+      message: "❌ حدث خطأ أثناء تحميل الملف",
+      error: err.message,
+    });
   }
 });
 
