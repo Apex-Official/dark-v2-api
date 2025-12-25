@@ -1,10 +1,10 @@
 import { routeLoader } from "./routesLoader.js";
 
 function extractQueries(handler) {
-  if (typeof handler !== "function") return null;
+  if (typeof handler !== "function") return [];
   const src = handler.toString();
   const matches = [...src.matchAll(/req\.query\.([a-zA-Z0-9_]+)/g)];
-  return matches.length ? [...new Set(matches.map(m => m[1]))] : null;
+  return [...new Set(matches.map(m => m[1]))];
 }
 
 export function apiDocs(basePath = "/api/v1") {
@@ -32,7 +32,7 @@ export function apiDocs(basePath = "/api/v1") {
         docs[section].push({
           method: info.method,
           path: shortPath,
-          queries: queries && queries.length ? queries : null
+          queries: queries.length ? queries : []
         });
       }
     });
