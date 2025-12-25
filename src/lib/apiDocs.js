@@ -5,11 +5,6 @@ export function apiDocs(basePath = "/api/v1") {
     const docs = {};
     const sectionFilter = req.params.section || req.query.section;
 
-    // ناخد كل الـ query parameters في object
-    const userQuery = { ...req.query };
-    // لو فيه section استخدمناه للفلترة، نحذفه من الـ query
-    if (sectionFilter) delete userQuery.section;
-
     routeLoader.routeInfo.forEach(info => {
       const fullPath = `${info.basePath}${info.routePath}`.replace(/\/+/g, "/");
       const parts = fullPath.split("/").filter(Boolean);
@@ -27,7 +22,7 @@ export function apiDocs(basePath = "/api/v1") {
         docs[section].push({
           method: info.method,
           path: shortPath,
-          query: Object.keys(userQuery).length ? userQuery : null // أي query موجود يتحط هنا
+          queries: info.queries && info.queries.length ? info.queries : null // أي query مسموح به
         });
       }
     });
@@ -47,4 +42,4 @@ export function apiDocs(basePath = "/api/v1") {
       docs
     });
   };
-  }
+}
