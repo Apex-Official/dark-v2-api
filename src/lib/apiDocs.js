@@ -4,30 +4,33 @@ export function apiDocs(basePath = "/api/v1") {
   return (req, res) => {
     const docs = {};
 
-    // ناخد القسم من params أو query
     const sectionFilter = req.params.section || req.query.section;
 
     routeLoader.routeInfo.forEach(info => {
+      // بناء الـ full path
       const fullPath = `${info.basePath}${info.routePath}`.replace(/\/+/g, "/");
       const parts = fullPath.split("/").filter(Boolean);
 
-      // نتأكد إن فيه على الأقل basePath + v1 + section
+      // نتأكد فيه على الأقل basePath + v1 + section
       if (parts.length < 3) return;
 
       const section = parts[2]; // القسم الأساسي
-
-      // لو فيه فلتر للقسم وما هوش مطابق، نرجع
       if (sectionFilter && section !== sectionFilter) return;
+
+      // ناخد بس أول 4 أجزاء path (basePath/v1/section/subsection)
+      const shortPath = "/" + parts.slice(0, 4).join("/");
 
       if (!docs[section]) docs[section] = [];
 
-      docs[section].push({
-        method: info.method,
-        path: fullPath
-      });
+      // نتأكد ما نضيفش duplicates
+      if (!docs[section].some(e => e.path === shortPath && e.method === info.method)) {
+        docs[section].push({
+          method: info.method,
+          path: shortPath
+        });
+      }
     });
 
-    // لو القسم محدد ومش موجود
     if (sectionFilter && !docs[sectionFilter]) {
       return res.status(404).json({
         error: "Section not found",
