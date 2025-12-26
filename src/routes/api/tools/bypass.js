@@ -1,7 +1,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import axios from "axios";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import { zencf } from "zencf";
 
 const router = express.Router();
