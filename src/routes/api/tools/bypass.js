@@ -1,5 +1,8 @@
 import express from "express";
+import fetch from "node-fetch";
 import axios from "axios";
+import cheerio from "cheerio";
+import { zencf } from "zencf";
 
 const router = express.Router();
 
@@ -20,272 +23,210 @@ const PROXIES = [
   "https://jiashu.1win.eu.org/"
 ];
 
-// 🔧 دالة لاستخراج siteKey من HTML
-const extractSiteKey = (html) => {
-  const matches = [
-    /sitekey["']?\s*[:=]\s*["']([^"']+)["']/i,
-    /data-sitekey=["']([^"']+)["']/i,
-    /"siteKey"\s*:\s*"([^"]+)"/i,
-    /turnstile\.render\([^,]+,\s*{\s*sitekey:\s*['"]([^'"]+)['"]/i,
-    /'sitekey':\s*'([^']+)'/i,
-    /"cf-turnstile"[^>]*data-sitekey="([^"]+)"/i
-  ];
-  
-  for (const regex of matches) {
-    const match = html.match(regex);
-    if (match && match[1]) return match[1];
-  }
-  return null;
-};
+// 🔧 دوال المساعدة
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 🚀 محاولة 1: استخدام ZenCF (عبر API مباشر)
-const tryZencfBypass = async (url) => {
-  try {
-    const response = await axios.post('https://api.zencf.com/v1/source', 
-      { url },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
-      }
-    );
-    
-    if (response.data && response.data.source) {
-      return { 
-        success: true, 
-        method: 'ZenCF API', 
-        data: response.data 
-      };
-    }
-    return { success: false, error: 'فشل ZenCF - لا يوجد محتوى' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 2: استخدام CFTO API
-const tryCftoApiBypass = async (url, proxy = undefined) => {
-  try {
-    const response = await axios.post('https://cf.pitucode.com', 
-      { url, mode: 'source', proxy },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        timeout: 30000
-      }
-    );
-    
-    if (response.status === 200 && response.data.source) {
-      return { success: true, method: 'CFTO API', data: response.data };
-    }
-    return { success: false, error: response.data.message || 'فشل CFTO API' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 3: استخدام CFTO WAF Session
-const tryCftoWafBypass = async (url) => {
-  try {
-    const response = await axios.post('https://cf.pitucode.com', 
-      { url, mode: 'waf-session' },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        timeout: 30000
-      }
-    );
-    
-    if (response.status === 200 && response.data.cookies) {
-      return { success: true, method: 'CFTO WAF Session', data: response.data };
-    }
-    return { success: false, error: 'فشل CFTO WAF' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 4: استخدام CFTO Turnstile
-const tryCftoTurnstileBypass = async (url) => {
-  try {
-    // جلب الصفحة للحصول على siteKey
-    const pageRes = await axios.get(url, { timeout: 10000 });
-    const html = pageRes.data;
-    const siteKey = extractSiteKey(html);
-    
-    if (siteKey) {
-      const response = await axios.post('https://cf.pitucode.com', 
-        { url, siteKey, mode: 'turnstile-min' },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          timeout: 30000
-        }
-      );
-      
-      if (response.data && response.data.token) {
+// 🚀 طرق التخطي
+const bypassMethods = {
+  // الطريقة 1: ZenCF (الأساسية)
+  async zencfSource(url) {
+    try {
+      const result = await zencf.source(url);
+      if (result && result.source) {
         return { 
           success: true, 
-          method: 'CFTO Turnstile', 
-          data: { ...response.data, siteKey } 
+          html: result.source, 
+          cookies: result.cookies || [], 
+          headers: result.headers || {},
+          statusCode: result.statusCode,
+          finalUrl: result.finalUrl || url
         };
       }
+    } catch (e) {
+      console.error("ZenCF error:", e.message);
     }
-    
-    return { success: false, error: 'لم يتم العثور على siteKey أو فشل Turnstile' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
+    return null;
+  },
 
-// 🚀 محاولة 5: استخدام Hostrta API
-const tryHostrtaBypass = async (url) => {
-  try {
-    // تحليل الصفحة
-    const analyzeRes = await axios.get(`https://key.hostrta.win/api/analyze?url=${encodeURIComponent(url)}`, 
-      { timeout: 15000 }
-    );
-    const analyzeData = analyzeRes.data;
-    
-    const siteKey = analyzeData.siteKey || analyzeData.sitekey;
-    
-    if (siteKey) {
-      // تخطي Cloudflare
-      const bypassRes = await axios.get(
-        `https://key.hostrta.win/api/bypass?url=${encodeURIComponent(url)}&sitekey=${siteKey}`,
-        { timeout: 30000 }
-      );
-      const bypassData = bypassRes.data;
-      
-      if (bypassData.success || bypassData.source) {
-        return { success: true, method: 'Hostrta API', data: bypassData };
-      }
-    }
-    
-    return { success: false, error: 'لم يتم العثور على siteKey' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 6: استخدام Ahmose API
-const tryAhmoseBypass = async (url) => {
-  try {
-    const response = await axios.get(
-      `https://ahmoseapi.loca.lt/api/bypass/source?url=${encodeURIComponent(url)}`,
-      { timeout: 30000 }
-    );
-    const result = response.data;
-    
-    if (result.success || result.source) {
-      return { success: true, method: 'Ahmose API', data: result };
-    }
-    return { success: false, error: result.message || 'فشل Ahmose' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 7: استخدام Nekolabs API
-const tryNekolabsBypass = async (url) => {
-  try {
-    // جلب الصفحة للحصول على siteKey
-    const pageRes = await axios.get(url, { timeout: 10000 });
-    const html = pageRes.data;
-    const siteKey = extractSiteKey(html);
-    
-    if (siteKey) {
-      const response = await axios.get(
-        `https://api.nekolabs.web.id/tls/bypass/cf-turnstile?url=${encodeURIComponent(url)}&siteKey=${siteKey}`,
-        { timeout: 30000 }
-      );
-      const result = response.data;
-      
-      if (result.success) {
-        return { success: true, method: 'Nekolabs API', data: result };
-      }
-    }
-    
-    return { success: false, error: 'لم يتم العثور على siteKey' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🚀 محاولة 8: استخدام البروكسيات
-const tryProxyBypass = async (url) => {
-  for (const proxy of PROXIES) {
+  // الطريقة 2: CFTO API Source
+  async cftoSource(url, proxy) {
     try {
-      const response = await axios.get(proxy + url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        timeout: 10000
+      const response = await fetch("https://cf.pitucode.com", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "source", url, proxy })
       });
-      
-      if (response.status === 200) {
-        const html = response.data;
-        if (typeof html === 'string' && html.length > 500 && !html.includes('Just a moment')) {
-          return { 
-            success: true, 
-            method: `Proxy: ${proxy}`, 
-            data: { source: html, proxy } 
-          };
-        }
-      }
-    } catch (error) {
-      continue;
+      const data = await response.json();
+      if (data.source) return { success: true, html: data.source, cookies: data.cookies, headers: data.headers };
+    } catch (e) {
+      console.error("CFTO Source error:", e.message);
     }
+    return null;
+  },
+
+  // الطريقة 3: CFTO WAF Session
+  async cftoWafSession(url, proxy) {
+    try {
+      const response = await fetch("https://cf.pitucode.com", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "waf-session", url, proxy })
+      });
+      const data = await response.json();
+      if (data.cookies) {
+        const html = await fetch(url, {
+          headers: { Cookie: data.cookies.map(c => `${c.name}=${c.value}`).join("; ") }
+        }).then(r => r.text());
+        return { success: true, html, cookies: data.cookies };
+      }
+    } catch (e) {
+      console.error("CFTO WAF error:", e.message);
+    }
+    return null;
+  },
+
+  // الطريقة 4: Hostrta Bypass
+  async hostrtaBypass(url) {
+    try {
+      const response = await fetch(`https://key.hostrta.win/api/analyze?url=${encodeURIComponent(url)}`);
+      const data = await response.json();
+      if (data.html || data.content) return { success: true, html: data.html || data.content };
+    } catch (e) {
+      console.error("Hostrta error:", e.message);
+    }
+    return null;
+  },
+
+  // الطريقة 5: Ahmose API
+  async ahmoseBypass(url) {
+    try {
+      const response = await fetch(`https://ahmoseapi.loca.lt/api/bypass/source?url=${encodeURIComponent(url)}`);
+      const data = await response.json();
+      if (data.html || data.source) return { success: true, html: data.html || data.source };
+    } catch (e) {
+      console.error("Ahmose error:", e.message);
+    }
+    return null;
+  },
+
+  // الطريقة 6: Nekolabs TLS
+  async nekolabsBypass(url, siteKey) {
+    try {
+      const apiUrl = siteKey 
+        ? `https://api.nekolabs.web.id/tls/bypass/cf-turnstile?url=${encodeURIComponent(url)}&siteKey=${siteKey}`
+        : `https://api.nekolabs.web.id/tls/bypass/cf-turnstile?url=${encodeURIComponent(url)}`;
+      const response = await fetch(apiUrl);
+      const data = await response.json();
+      if (data.html || data.content) return { success: true, html: data.html || data.content };
+    } catch (e) {
+      console.error("Nekolabs error:", e.message);
+    }
+    return null;
+  },
+
+  // الطريقة 7: Scrape.do
+  async scrapeDo(url) {
+    try {
+      const token = "69c59f0ca5f942b580c0a03606a1b90c1978645d2bb";
+      const targetUrl = encodeURIComponent(url);
+      
+      const config = {
+        method: "GET",
+        url: `https://api.scrape.do/?token=${token}&url=${targetUrl}&render=true`,
+        headers: {},
+      };
+
+      const response = await axios(config);
+      
+      if (response.status === 200 && response.data) {
+        const $ = cheerio.load(response.data);
+        const h2 = $("h2").first().text().trim();
+        const h3 = $("h3").first().text().trim();
+        
+        return { 
+          success: true, 
+          html: response.data,
+          statusCode: response.status,
+          h2: h2 || null,
+          h3: h3 || null
+        };
+      }
+    } catch (e) {
+      console.error("Scrape.do error:", e.message);
+    }
+    return null;
+  },
+
+  // الطريقة 8: البروكسيات المباشرة
+  async proxyBypass(url) {
+    for (const proxy of PROXIES) {
+      try {
+        const response = await fetch(proxy + url, { timeout: 10000 });
+        if (response.ok) {
+          const html = await response.text();
+          if (html && html.length > 500) return { success: true, html };
+        }
+      } catch (e) {
+        // استمر للبروكسي التالي
+      }
+    }
+    return null;
+  },
+
+  // الطريقة 9: Fetch مباشر
+  async directFetch(url) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+      });
+      if (response.ok) {
+        const html = await response.text();
+        if (html && !html.includes('Just a moment')) return { success: true, html };
+      }
+    } catch (e) {
+      console.error("Direct fetch error:", e.message);
+    }
+    return null;
   }
-  return { success: false, error: 'فشلت جميع البروكسيات' };
 };
 
-// 🎯 دالة التخطي الرئيسية
-const bypassCloudflare = async (url) => {
+// 🔄 دالة التخطي الرئيسية
+async function bypassCloudflare(url) {
   const methods = [
-    { name: 'ZenCF API', fn: () => tryZencfBypass(url) },
-    { name: 'CFTO API', fn: () => tryCftoApiBypass(url) },
-    { name: 'CFTO WAF', fn: () => tryCftoWafBypass(url) },
-    { name: 'CFTO Turnstile', fn: () => tryCftoTurnstileBypass(url) },
-    { name: 'Hostrta', fn: () => tryHostrtaBypass(url) },
-    { name: 'Ahmose', fn: () => tryAhmoseBypass(url) },
-    { name: 'Nekolabs', fn: () => tryNekolabsBypass(url) },
-    { name: 'Proxies', fn: () => tryProxyBypass(url) }
+    { name: "ZenCF", fn: () => bypassMethods.zencfSource(url) },
+    { name: "CFTO Source", fn: () => bypassMethods.cftoSource(url) },
+    { name: "CFTO WAF", fn: () => bypassMethods.cftoWafSession(url) },
+    { name: "Hostrta", fn: () => bypassMethods.hostrtaBypass(url) },
+    { name: "Ahmose", fn: () => bypassMethods.ahmoseBypass(url) },
+    { name: "Nekolabs", fn: () => bypassMethods.nekolabsBypass(url) },
+    { name: "Scrape.do", fn: () => bypassMethods.scrapeDo(url) },
+    { name: "Proxy", fn: () => bypassMethods.proxyBypass(url) },
+    { name: "Direct", fn: () => bypassMethods.directFetch(url) }
   ];
 
-  let attempts = [];
-  
-  for (let i = 0; i < methods.length; i++) {
-    const method = methods[i];
-    
+  for (const method of methods) {
     try {
       const result = await method.fn();
-      attempts.push({ method: method.name, ...result });
       
-      if (result.success) {
+      if (result && result.success && result.html) {
         return {
           success: true,
-          method: result.method,
-          data: result.data,
-          attempts: attempts
+          method: method.name,
+          data: result
         };
       }
-    } catch (error) {
-      attempts.push({ method: method.name, success: false, error: error.message });
+    } catch (err) {
+      console.error(`فشل ${method.name}:`, err.message);
     }
+    
+    await sleep(500);
   }
 
-  return {
-    success: false,
-    message: 'فشلت جميع محاولات التخطي',
-    attempts: attempts
-  };
-};
+  return { success: false, message: "فشلت جميع الطرق" };
+}
 
 /** 🧩 POST Route */
 router.post("/", async (req, res) => {
@@ -308,44 +249,42 @@ router.post("/", async (req, res) => {
 
     const result = await bypassCloudflare(url);
 
-    if (result.success) {
-      const data = result.data;
-      const html = data.source || data.html || '';
-      const cookies = data.cookies || [];
-      const headers = data.headers || {};
-      const token = data.token || '';
-      const statusCode = data.statusCode || data.status || 200;
-      const finalUrl = data.finalUrl || data.url || url;
-
-      const cookieText = Array.isArray(cookies) && cookies.length
-        ? cookies.map(c => `${c.name}=${c.value}`).join("; ")
-        : typeof cookies === 'object' && Object.keys(cookies).length
-        ? Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ")
-        : "";
-
-      return res.json({
-        status: true,
-        message: "✅ تم تخطي الحماية بنجاح",
-        method: result.method,
-        url: finalUrl,
-        statusCode: statusCode,
-        pageSize: `${(html.length / 1024).toFixed(2)} KB`,
-        cookiesCount: cookies.length || Object.keys(cookies).length || 0,
-        cookies: cookieText || null,
-        headers: headers,
-        token: token || null,
-        siteKey: data.siteKey || null,
-        html: html,
-        htmlPreview: html.slice(0, 3000),
-        attempts: result.attempts
-      });
-    } else {
+    if (!result.success) {
       return res.status(500).json({
         status: false,
-        message: result.message,
-        attempts: result.attempts
+        message: "❌ فشل التخطي - تم تجربة جميع الطرق المتاحة"
       });
     }
+
+    const { html, cookies = [], headers = {}, statusCode = "N/A", finalUrl = url } = result.data;
+    
+    // استخراج بيانات إضافية
+    const $ = cheerio.load(html);
+    const title = $("title").text().trim() || "بدون عنوان";
+    const h1 = $("h1").first().text().trim();
+    const h2 = result.data.h2 || $("h2").first().text().trim();
+    const h3 = result.data.h3 || $("h3").first().text().trim();
+
+    res.json({
+      status: true,
+      message: "✅ تم التخطي بنجاح",
+      method: result.method,
+      data: {
+        url: finalUrl,
+        statusCode,
+        size: `${(html.length / 1024).toFixed(2)} KB`,
+        title,
+        h1: h1 || null,
+        h2: h2 || null,
+        h3: h3 || null,
+        cookies: cookies.map(c => ({ name: c.name, value: c.value })),
+        cookiesCount: cookies.length,
+        headers: Object.fromEntries(Object.entries(headers).slice(0, 10)),
+        htmlPreview: html.slice(0, 3000) + (html.length > 3000 ? '...' : ''),
+        fullHtml: html // الكود الكامل
+      }
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ 
@@ -364,8 +303,7 @@ router.get("/", async (req, res) => {
     if (!url) {
       return res.status(400).json({ 
         status: false, 
-        message: "⚠️ الرابط مطلوب (url)",
-        example: "?url=https://anime3rb.com"
+        message: "⚠️ الرابط مطلوب (url)" 
       });
     }
 
@@ -378,44 +316,42 @@ router.get("/", async (req, res) => {
 
     const result = await bypassCloudflare(url);
 
-    if (result.success) {
-      const data = result.data;
-      const html = data.source || data.html || '';
-      const cookies = data.cookies || [];
-      const headers = data.headers || {};
-      const token = data.token || '';
-      const statusCode = data.statusCode || data.status || 200;
-      const finalUrl = data.finalUrl || data.url || url;
-
-      const cookieText = Array.isArray(cookies) && cookies.length
-        ? cookies.map(c => `${c.name}=${c.value}`).join("; ")
-        : typeof cookies === 'object' && Object.keys(cookies).length
-        ? Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ")
-        : "";
-
-      return res.json({
-        status: true,
-        message: "✅ تم تخطي الحماية بنجاح",
-        method: result.method,
-        url: finalUrl,
-        statusCode: statusCode,
-        pageSize: `${(html.length / 1024).toFixed(2)} KB`,
-        cookiesCount: cookies.length || Object.keys(cookies).length || 0,
-        cookies: cookieText || null,
-        headers: headers,
-        token: token || null,
-        siteKey: data.siteKey || null,
-        html: html,
-        htmlPreview: html.slice(0, 3000),
-        attempts: result.attempts
-      });
-    } else {
+    if (!result.success) {
       return res.status(500).json({
         status: false,
-        message: result.message,
-        attempts: result.attempts
+        message: "❌ فشل التخطي - تم تجربة جميع الطرق المتاحة"
       });
     }
+
+    const { html, cookies = [], headers = {}, statusCode = "N/A", finalUrl = url } = result.data;
+    
+    // استخراج بيانات إضافية
+    const $ = cheerio.load(html);
+    const title = $("title").text().trim() || "بدون عنوان";
+    const h1 = $("h1").first().text().trim();
+    const h2 = result.data.h2 || $("h2").first().text().trim();
+    const h3 = result.data.h3 || $("h3").first().text().trim();
+
+    res.json({
+      status: true,
+      message: "✅ تم التخطي بنجاح",
+      method: result.method,
+      data: {
+        url: finalUrl,
+        statusCode,
+        size: `${(html.length / 1024).toFixed(2)} KB`,
+        title,
+        h1: h1 || null,
+        h2: h2 || null,
+        h3: h3 || null,
+        cookies: cookies.map(c => ({ name: c.name, value: c.value })),
+        cookiesCount: cookies.length,
+        headers: Object.fromEntries(Object.entries(headers).slice(0, 10)),
+        htmlPreview: html.slice(0, 3000) + (html.length > 3000 ? '...' : ''),
+        fullHtml: html // الكود الكامل
+      }
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ 
